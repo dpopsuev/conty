@@ -6,6 +6,8 @@ import (
 	"os"
 
 	adapterdriven "github.com/DanyPops/conty/internal/adapter/driven"
+	_ "github.com/DanyPops/conty/internal/adapter/driven/github"
+	_ "github.com/DanyPops/conty/internal/adapter/driven/gitlab"
 	_ "github.com/DanyPops/conty/internal/adapter/driven/jenkins"
 	mcpserver "github.com/DanyPops/conty/internal/adapter/driver/mcp"
 	"github.com/DanyPops/conty/internal/app"

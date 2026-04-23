@@ -5,6 +5,7 @@ import (
 	"sort"
 	"sync"
 
+	"github.com/DanyPops/conty/internal/adapter/driven/cache"
 	"github.com/DanyPops/conty/internal/config"
 	"github.com/DanyPops/conty/internal/port/driven"
 )
@@ -61,7 +62,7 @@ func CreateFromConfig(cfg *config.Config) (adapters []driven.CIAdapter, warnings
 				break
 			}
 			if adapter != nil {
-				adapters = append(adapters, adapter)
+				adapters = append(adapters, cache.New(adapter))
 			}
 			break
 		}
