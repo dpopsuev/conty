@@ -176,3 +176,29 @@ func TestBackendNotFound(t *testing.T) {
 		t.Errorf("err = %v, want ErrBackendNotFound", err)
 	}
 }
+
+func TestListBackends_ReturnsRegisteredNames(t *testing.T) {
+	stub1 := driventest.NewStubCIAdapter("jenkins-ci")
+	stub2 := driventest.NewStubCIAdapter("jenkins-auto")
+	svc := app.NewService(stub1, stub2)
+
+	backends := svc.ListBackends()
+	if len(backends) != 2 {
+		t.Fatalf("ListBackends() = %d, want 2", len(backends))
+	}
+	found := map[string]bool{}
+	for _, b := range backends {
+		found[b] = true
+	}
+	if !found["jenkins-ci"] || !found["jenkins-auto"] {
+		t.Errorf("backends = %v, want jenkins-ci and jenkins-auto", backends)
+	}
+}
+
+func TestListBackends_EmptyWhenNone(t *testing.T) {
+	svc := app.NewService()
+	backends := svc.ListBackends()
+	if len(backends) != 0 {
+		t.Errorf("ListBackends() = %v, want empty", backends)
+	}
+}

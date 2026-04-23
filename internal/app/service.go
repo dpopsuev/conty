@@ -151,6 +151,16 @@ func (s *Service) GetStepLog(ctx context.Context, name string, step int) (string
 	return a.GetJobLog(ctx, run.Steps[step].JobName, run.Steps[step].RunID)
 }
 
+func (s *Service) ListBackends() []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	names := make([]string, 0, len(s.adapters))
+	for name := range s.adapters {
+		names = append(names, name)
+	}
+	return names
+}
+
 func (s *Service) ListPipelines() []string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

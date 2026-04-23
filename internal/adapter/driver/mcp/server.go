@@ -25,6 +25,7 @@ Actions:
   pipeline_status   — Get current status of a pipeline run
   step_log          — Get log output for a specific pipeline step
   pipelines         — List available pipelines
+  backends          — List available CI backend names
   ci_check          — Check latest CI run status for a job
   ci_verdict        — Get structured pass/fail verdict with failure context
   ci_redeploy       — Trigger redeployment of a CI job`
@@ -57,7 +58,7 @@ func RegisterTools(srv *mcpserver.Server, svc ContyService) {
 var contySchema = json.RawMessage(`{
 	"type": "object",
 	"properties": {
-		"action":  {"type": "string", "enum": ["pipeline_trigger","pipeline_status","step_log","pipelines","ci_check","ci_verdict","ci_redeploy"], "description": "Action to perform"},
+		"action":  {"type": "string", "enum": ["pipeline_trigger","pipeline_status","step_log","pipelines","backends","ci_check","ci_verdict","ci_redeploy"], "description": "Action to perform"},
 		"name":    {"type": "string", "description": "Pipeline name (pipeline_trigger, pipeline_status, step_log)"},
 		"step":    {"type": "integer", "description": "Step index for step_log (0-based)"},
 		"backend": {"type": "string", "description": "Backend name (ci_check, ci_verdict, ci_redeploy)"},
@@ -120,7 +121,14 @@ func contyHandler(svc ContyService) server.Handler {
 			return tool.TextResult(log), nil
 
 		case "pipelines":
-			return server.JSONResult(svc.ListPipelines())
+			return server.JSONResult(map[string]any{
+				"pipelines": svc.ListPipelines(),
+			})
+
+		case "backends":
+			return server.JSONResult(map[string]any{
+				"backends": svc.ListBackends(),
+			})
 
 		case "ci_check":
 			if args.Backend == "" {

@@ -61,6 +61,10 @@ func (s *StubPipelineService) ListPipelines() []string {
 	return s.Pipelines
 }
 
+func (s *StubPipelineService) ListBackends() []string {
+	return nil
+}
+
 type CheckLatestCall struct {
 	Backend string
 	JobRef  string

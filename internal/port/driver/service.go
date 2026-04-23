@@ -11,6 +11,7 @@ type PipelineService interface {
 	GetPipelineStatus(ctx context.Context, name string) (*domain.PipelineRun, error)
 	GetStepLog(ctx context.Context, name string, step int) (string, error)
 	ListPipelines() []string
+	ListBackends() []string
 }
 
 type CIMonitorService interface {
