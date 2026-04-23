@@ -11,9 +11,9 @@ import (
 	"strings"
 	"time"
 
-	adapterdriven "github.com/DanyPops/conty/internal/adapter/driven"
-	"github.com/DanyPops/conty/internal/domain"
-	"github.com/DanyPops/conty/internal/port/driven"
+	adapterdriven "github.com/dpopsuev/conty/internal/adapter/driven"
+	"github.com/dpopsuev/conty/internal/domain"
+	"github.com/dpopsuev/conty/internal/port/driven"
 	"github.com/bndr/gojenkins"
 )
 

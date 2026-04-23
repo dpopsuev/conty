@@ -3,7 +3,7 @@ package domain_test
 import (
 	"testing"
 
-	"github.com/DanyPops/conty/internal/domain"
+	"github.com/dpopsuev/conty/internal/domain"
 )
 
 func TestRunStatus_IsTerminal(t *testing.T) {

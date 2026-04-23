@@ -1,4 +1,4 @@
-module github.com/DanyPops/conty
+module github.com/dpopsuev/conty
 
 go 1.25.8
 

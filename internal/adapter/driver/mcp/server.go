@@ -6,7 +6,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/DanyPops/conty/internal/port/driver"
+	"github.com/dpopsuev/conty/internal/port/driver"
 	"github.com/dpopsuev/battery/mcpserver"
 	"github.com/dpopsuev/battery/server"
 	"github.com/dpopsuev/battery/tool"

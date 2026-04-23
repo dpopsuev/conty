@@ -3,7 +3,7 @@ package driver
 import (
 	"context"
 
-	"github.com/DanyPops/conty/internal/domain"
+	"github.com/dpopsuev/conty/internal/domain"
 )
 
 type PipelineService interface {

@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/DanyPops/conty/internal/port/driven"
+	"github.com/dpopsuev/conty/internal/port/driven"
 )
 
 func RunCIAdapterContractTests(t *testing.T, setup func(t *testing.T) (driven.CIAdapter, string, string)) {

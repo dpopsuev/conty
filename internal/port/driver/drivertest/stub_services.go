@@ -4,8 +4,8 @@ import (
 	"context"
 	"sync"
 
-	"github.com/DanyPops/conty/internal/domain"
-	"github.com/DanyPops/conty/internal/port/driver"
+	"github.com/dpopsuev/conty/internal/domain"
+	"github.com/dpopsuev/conty/internal/port/driver"
 )
 
 var _ driver.PipelineService = (*StubPipelineService)(nil)

@@ -5,9 +5,9 @@ import (
 	"os"
 	"time"
 
-	adapterdriven "github.com/DanyPops/conty/internal/adapter/driven"
-	"github.com/DanyPops/conty/internal/config"
-	"github.com/DanyPops/conty/internal/port/driven"
+	adapterdriven "github.com/dpopsuev/conty/internal/adapter/driven"
+	"github.com/dpopsuev/conty/internal/config"
+	"github.com/dpopsuev/conty/internal/port/driven"
 )
 
 func init() {

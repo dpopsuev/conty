@@ -7,8 +7,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/DanyPops/conty/internal/domain"
-	"github.com/DanyPops/conty/internal/port/driven"
+	"github.com/dpopsuev/conty/internal/domain"
+	"github.com/dpopsuev/conty/internal/port/driven"
 )
 
 var (

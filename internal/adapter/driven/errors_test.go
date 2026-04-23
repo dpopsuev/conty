@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	adapterdriven "github.com/DanyPops/conty/internal/adapter/driven"
+	adapterdriven "github.com/dpopsuev/conty/internal/adapter/driven"
 )
 
 func TestRateLimitError_Message(t *testing.T) {

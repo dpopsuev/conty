@@ -5,9 +5,9 @@ import (
 	"sort"
 	"sync"
 
-	"github.com/DanyPops/conty/internal/adapter/driven/cache"
-	"github.com/DanyPops/conty/internal/config"
-	"github.com/DanyPops/conty/internal/port/driven"
+	"github.com/dpopsuev/conty/internal/adapter/driven/cache"
+	"github.com/dpopsuev/conty/internal/config"
+	"github.com/dpopsuev/conty/internal/port/driven"
 )
 
 type Factory func(name string, backend config.Backend) (driven.CIAdapter, error)

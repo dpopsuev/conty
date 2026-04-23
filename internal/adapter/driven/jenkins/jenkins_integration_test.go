@@ -7,9 +7,9 @@ import (
 	"os"
 	"testing"
 
-	"github.com/DanyPops/conty/internal/adapter/driven/jenkins"
-	"github.com/DanyPops/conty/internal/port/driven"
-	"github.com/DanyPops/conty/internal/port/driven/driventest"
+	"github.com/dpopsuev/conty/internal/adapter/driven/jenkins"
+	"github.com/dpopsuev/conty/internal/port/driven"
+	"github.com/dpopsuev/conty/internal/port/driven/driventest"
 )
 
 func TestJenkinsAdapter_ContractCompliance(t *testing.T) {

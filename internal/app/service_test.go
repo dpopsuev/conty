@@ -5,9 +5,9 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/DanyPops/conty/internal/app"
-	"github.com/DanyPops/conty/internal/domain"
-	"github.com/DanyPops/conty/internal/port/driven/driventest"
+	"github.com/dpopsuev/conty/internal/app"
+	"github.com/dpopsuev/conty/internal/domain"
+	"github.com/dpopsuev/conty/internal/port/driven/driventest"
 )
 
 func stubAdapter() *driventest.StubCIAdapter {

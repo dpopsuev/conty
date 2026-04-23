@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/DanyPops/conty/internal/adapter/driver/cli"
+	"github.com/dpopsuev/conty/internal/adapter/driver/cli"
 )
 
 func main() {

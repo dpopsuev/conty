@@ -5,9 +5,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/DanyPops/conty/internal/adapter/driven/cache"
-	"github.com/DanyPops/conty/internal/domain"
-	"github.com/DanyPops/conty/internal/port/driven/driventest"
+	"github.com/dpopsuev/conty/internal/adapter/driven/cache"
+	"github.com/dpopsuev/conty/internal/domain"
+	"github.com/dpopsuev/conty/internal/port/driven/driventest"
 )
 
 func TestCache_PollRunCachesTerminal(t *testing.T) {
