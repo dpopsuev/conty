@@ -240,6 +240,30 @@ func (a *Adapter) GetArtifact(ctx context.Context, _ string, runID string, path 
 	return data, nil
 }
 
+func (a *Adapter) PollQueue(_ context.Context, _ string) (string, error) {
+	return "", fmt.Errorf("%w: GitLab CI uses pipeline IDs, not queue IDs", ErrNotFound)
+}
+
+func (a *Adapter) GetBuildParams(_ context.Context, _, _ string) (map[string]string, error) {
+	return nil, fmt.Errorf("%w: GitLab CI pipeline variables not yet supported", ErrNotFound)
+}
+
+func (a *Adapter) ListBuilds(ctx context.Context, _ string, limit int) ([]domain.CIRun, error) {
+	if limit <= 0 {
+		limit = 10
+	}
+	path := fmt.Sprintf("/api/v4/projects/%s/pipelines?per_page=%d", a.projectID, limit)
+	var resp []glPipeline
+	if err := a.api(ctx, http.MethodGet, path, nil, &resp); err != nil {
+		return nil, err
+	}
+	runs := make([]domain.CIRun, len(resp))
+	for i := range resp {
+		runs[i] = resp[i].toCIRun()
+	}
+	return runs, nil
+}
+
 func (a *Adapter) api(ctx context.Context, method, path string, body, result any) error {
 	var bodyReader io.Reader
 	if body != nil {

@@ -124,6 +124,36 @@ func (a *Adapter) GetJobLog(ctx context.Context, jobName string, runID string) (
 	return log, nil
 }
 
+func (a *Adapter) PollQueue(ctx context.Context, queueID string) (string, error) {
+	return a.inner.PollQueue(ctx, queueID)
+}
+
+func (a *Adapter) GetBuildParams(ctx context.Context, jobName string, runID string) (map[string]string, error) {
+	key := fmt.Sprintf("params:%s:%s", jobName, runID)
+	if v, ok := a.get(key); ok {
+		return v.(map[string]string), nil
+	}
+	params, err := a.inner.GetBuildParams(ctx, jobName, runID)
+	if err != nil {
+		return nil, err
+	}
+	a.put(key, params, a.logTTL)
+	return params, nil
+}
+
+func (a *Adapter) ListBuilds(ctx context.Context, jobName string, limit int) ([]domain.CIRun, error) {
+	key := fmt.Sprintf("builds:%s:%d", jobName, limit)
+	if v, ok := a.get(key); ok {
+		return v.([]domain.CIRun), nil
+	}
+	builds, err := a.inner.ListBuilds(ctx, jobName, limit)
+	if err != nil {
+		return nil, err
+	}
+	a.put(key, builds, a.listTTL)
+	return builds, nil
+}
+
 func (a *Adapter) ListArtifacts(ctx context.Context, jobName string, runID string) ([]domain.CIArtifact, error) {
 	key := fmt.Sprintf("artifacts:%s:%s", jobName, runID)
 	if v, ok := a.get(key); ok {

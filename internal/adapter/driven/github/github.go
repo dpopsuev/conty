@@ -249,6 +249,32 @@ func (a *Adapter) GetArtifact(ctx context.Context, _ string, _ string, path stri
 	return data, nil
 }
 
+func (a *Adapter) PollQueue(_ context.Context, _ string) (string, error) {
+	return "", fmt.Errorf("%w: GitHub Actions uses run IDs, not queue IDs", ErrNotFound)
+}
+
+func (a *Adapter) GetBuildParams(_ context.Context, _, _ string) (map[string]string, error) {
+	return nil, fmt.Errorf("%w: GitHub Actions workflow inputs not yet supported", ErrNotFound)
+}
+
+func (a *Adapter) ListBuilds(ctx context.Context, _ string, limit int) ([]domain.CIRun, error) {
+	if limit <= 0 {
+		limit = 10
+	}
+	path := fmt.Sprintf("/repos/%s/%s/actions/runs?per_page=%d", a.owner, a.repo, limit)
+	var resp struct {
+		WorkflowRuns []ghWorkflowRun `json:"workflow_runs"`
+	}
+	if err := a.api(ctx, http.MethodGet, path, nil, &resp); err != nil {
+		return nil, err
+	}
+	runs := make([]domain.CIRun, len(resp.WorkflowRuns))
+	for i := range resp.WorkflowRuns {
+		runs[i] = resp.WorkflowRuns[i].toCIRun()
+	}
+	return runs, nil
+}
+
 func (a *Adapter) api(ctx context.Context, method, path string, body, result any) error {
 	var bodyReader io.Reader
 	if body != nil {

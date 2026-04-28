@@ -200,6 +200,92 @@ func TestTriggerRedeploy_NilParamsFallsBack(t *testing.T) {
 	}
 }
 
+func TestCITrigger_WithParams(t *testing.T) {
+	stub := stubAdapter()
+	svc := app.NewService(stub)
+	stub.QueueID = "build-99"
+
+	params := map[string]string{"OPENSHIFT_RELEASE_IMAGE": "quay.io/ocp/release:4.22-nightly"}
+	result, err := svc.CITrigger(context.Background(), "test", "ocp-baremetal-ipi-deployment", params)
+	if err != nil {
+		t.Fatalf("CITrigger: %v", err)
+	}
+	if result.QueueID == "" {
+		t.Error("expected queue_id")
+	}
+	if result.BuildNumber == "" {
+		t.Error("expected build_number from queue resolution")
+	}
+	if stub.TriggerRunCalls[0].Params["OPENSHIFT_RELEASE_IMAGE"] != "quay.io/ocp/release:4.22-nightly" {
+		t.Errorf("params not passed through")
+	}
+}
+
+func TestCIParams_ReturnsBuildParameters(t *testing.T) {
+	stub := stubAdapter()
+	stub.BuildParams = map[string]string{
+		"OPENSHIFT_RELEASE_IMAGE": "quay.io/ocp/release:4.22-ec.5",
+		"CLUSTER_NAME":           "kni-qe-79",
+	}
+	svc := app.NewService(stub)
+
+	params, err := svc.CIParams(context.Background(), "test", "ocp-baremetal-ipi-deployment", "40201")
+	if err != nil {
+		t.Fatalf("CIParams: %v", err)
+	}
+	if params["OPENSHIFT_RELEASE_IMAGE"] != "quay.io/ocp/release:4.22-ec.5" {
+		t.Errorf("missing OPENSHIFT_RELEASE_IMAGE, got %v", params)
+	}
+	if params["CLUSTER_NAME"] != "kni-qe-79" {
+		t.Errorf("missing CLUSTER_NAME, got %v", params)
+	}
+}
+
+func TestCIHistory_ReturnsBuilds(t *testing.T) {
+	stub := stubAdapter()
+	stub.Builds = []domain.CIRun{
+		{ID: "40230", Status: domain.RunStatusSuccess},
+		{ID: "40228", Status: domain.RunStatusFailure},
+	}
+	svc := app.NewService(stub)
+
+	builds, err := svc.CIHistory(context.Background(), "test", "ocp-baremetal-ipi-deployment", 10)
+	if err != nil {
+		t.Fatalf("CIHistory: %v", err)
+	}
+	if len(builds) != 2 {
+		t.Fatalf("got %d builds, want 2", len(builds))
+	}
+}
+
+func TestCILog_ReturnsBuildLog(t *testing.T) {
+	stub := stubAdapter()
+	stub.Log = "ERROR: rhcos.json returned 404"
+	svc := app.NewService(stub)
+
+	log, err := svc.CILog(context.Background(), "test", "ocp-baremetal-ipi-deployment", "40232")
+	if err != nil {
+		t.Fatalf("CILog: %v", err)
+	}
+	if log == "" {
+		t.Error("expected log output")
+	}
+}
+
+func TestCIPoll_ResolvesQueueToBuild(t *testing.T) {
+	stub := stubAdapter()
+	stub.QueueID = "99"
+	svc := app.NewService(stub)
+
+	buildNum, err := svc.CIPoll(context.Background(), "test", "1256514")
+	if err != nil {
+		t.Fatalf("CIPoll: %v", err)
+	}
+	if buildNum == "" {
+		t.Error("expected resolved build number")
+	}
+}
+
 func TestBackendNotFound(t *testing.T) {
 	svc := app.NewService()
 	_, err := svc.CheckLatest(context.Background(), "nonexistent", "job")

@@ -8,6 +8,8 @@ import (
 	"github.com/dpopsuev/conty/internal/port/driver"
 )
 
+var _ = domain.TriggerResult{}
+
 var _ driver.PipelineService = (*StubPipelineService)(nil)
 var _ driver.CIMonitorService = (*StubCIMonitorService)(nil)
 
@@ -118,4 +120,24 @@ func (s *StubCIMonitorService) TriggerRedeployWithParams(_ context.Context, back
 	defer s.mu.Unlock()
 	s.RedeployCalls = append(s.RedeployCalls, RedeployCall{Backend: backend, JobRef: jobRef})
 	return s.RunID, s.Err
+}
+
+func (s *StubCIMonitorService) CITrigger(_ context.Context, _, _ string, _ map[string]string) (*domain.TriggerResult, error) {
+	return nil, s.Err
+}
+
+func (s *StubCIMonitorService) CIParams(_ context.Context, _, _, _ string) (map[string]string, error) {
+	return nil, s.Err
+}
+
+func (s *StubCIMonitorService) CIHistory(_ context.Context, _, _ string, _ int) ([]domain.CIRun, error) {
+	return nil, s.Err
+}
+
+func (s *StubCIMonitorService) CILog(_ context.Context, _, _, _ string) (string, error) {
+	return "", s.Err
+}
+
+func (s *StubCIMonitorService) CIPoll(_ context.Context, _, _ string) (string, error) {
+	return "", s.Err
 }

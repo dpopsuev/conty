@@ -42,19 +42,25 @@ type GetArtifactCall struct {
 }
 
 type StubCIAdapter struct {
-	NameVal   string
-	RunID     string
-	Run       *domain.CIRun
-	Jobs      []domain.CIJob
-	Log       string
-	Artifacts []domain.CIArtifact
-	Artifact  []byte
-	Err       error
+	NameVal     string
+	RunID       string
+	QueueID     string
+	Run         *domain.CIRun
+	Jobs        []domain.CIJob
+	Log         string
+	Artifacts   []domain.CIArtifact
+	Artifact    []byte
+	BuildParams map[string]string
+	Builds      []domain.CIRun
+	Err         error
 
 	TriggerRunErr    error
 	PollRunErr       error
+	PollQueueErr     error
 	ListJobsErr      error
 	GetJobLogErr     error
+	GetBuildParamsErr error
+	ListBuildsErr    error
 	ListArtifactsErr error
 	GetArtifactErr   error
 
@@ -99,6 +105,13 @@ func (s *StubCIAdapter) PollRun(_ context.Context, jobName, runID string) (*doma
 	return s.Run, nil
 }
 
+func (s *StubCIAdapter) PollQueue(_ context.Context, _ string) (string, error) {
+	if s.PollQueueErr != nil {
+		return "", s.PollQueueErr
+	}
+	return s.QueueID, nil
+}
+
 func (s *StubCIAdapter) ListJobs(_ context.Context, jobName, runID string) ([]domain.CIJob, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -123,6 +136,20 @@ func (s *StubCIAdapter) GetJobLog(_ context.Context, jobName, runID string) (str
 		return "", s.Err
 	}
 	return s.Log, nil
+}
+
+func (s *StubCIAdapter) GetBuildParams(_ context.Context, _, _ string) (map[string]string, error) {
+	if s.GetBuildParamsErr != nil {
+		return nil, s.GetBuildParamsErr
+	}
+	return s.BuildParams, nil
+}
+
+func (s *StubCIAdapter) ListBuilds(_ context.Context, _ string, _ int) ([]domain.CIRun, error) {
+	if s.ListBuildsErr != nil {
+		return nil, s.ListBuildsErr
+	}
+	return s.Builds, nil
 }
 
 func (s *StubCIAdapter) ListArtifacts(_ context.Context, jobName, runID string) ([]domain.CIArtifact, error) {

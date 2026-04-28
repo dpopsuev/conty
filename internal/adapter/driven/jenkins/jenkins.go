@@ -253,6 +253,104 @@ func (a *Adapter) GetArtifact(ctx context.Context, jobName string, runID string,
 	return data, nil
 }
 
+func (a *Adapter) PollQueue(ctx context.Context, queueID string) (string, error) {
+	start := time.Now()
+	adapterdriven.LogOp(ctx, a.name, "poll_queue", slog.String("queue_id", queueID))
+
+	id, err := strconv.ParseInt(queueID, 10, 64)
+	if err != nil {
+		return "", fmt.Errorf("invalid queue ID %q: %w", queueID, err)
+	}
+
+	task, err := a.jenkins.GetQueueItem(ctx, id)
+	if err != nil {
+		adapterdriven.LogError(ctx, a.name, "poll_queue", err)
+		return "", err
+	}
+
+	buildNum := task.Raw.Executable.Number
+	if buildNum == 0 {
+		adapterdriven.LogOpDone(ctx, a.name, "poll_queue",
+			slog.Duration(adapterdriven.LogKeyElapsed, time.Since(start)),
+			slog.String("status", "queued"))
+		return "", nil
+	}
+
+	result := strconv.FormatInt(buildNum, 10)
+	adapterdriven.LogOpDone(ctx, a.name, "poll_queue",
+		slog.Duration(adapterdriven.LogKeyElapsed, time.Since(start)),
+		slog.String("build_number", result))
+	return result, nil
+}
+
+func (a *Adapter) GetBuildParams(ctx context.Context, jobName string, runID string) (map[string]string, error) {
+	start := time.Now()
+	adapterdriven.LogOp(ctx, a.name, "get_build_params",
+		slog.String(adapterdriven.LogKeyID, jobName),
+		slog.String("run_id", runID))
+
+	j, err := a.getJob(ctx, jobName)
+	if err != nil {
+		return nil, err
+	}
+
+	num, err := strconv.ParseInt(runID, 10, 64)
+	if err != nil {
+		return nil, fmt.Errorf("invalid run ID %q: %w", runID, err)
+	}
+
+	b, err := j.GetBuild(ctx, num)
+	if err != nil {
+		adapterdriven.LogError(ctx, a.name, "get_build_params", err)
+		return nil, fmt.Errorf("%w: %s #%s", ErrBuildNotFound, jobName, runID)
+	}
+
+	params := make(map[string]string)
+	for _, p := range b.GetParameters() {
+		params[p.Name] = fmt.Sprintf("%v", p.Value)
+	}
+
+	adapterdriven.LogOpDone(ctx, a.name, "get_build_params",
+		slog.Duration(adapterdriven.LogKeyElapsed, time.Since(start)),
+		slog.Int(adapterdriven.LogKeyCount, len(params)))
+	return params, nil
+}
+
+func (a *Adapter) ListBuilds(ctx context.Context, jobName string, limit int) ([]domain.CIRun, error) {
+	start := time.Now()
+	adapterdriven.LogOp(ctx, a.name, "list_builds",
+		slog.String(adapterdriven.LogKeyID, jobName),
+		slog.Int("limit", limit))
+
+	j, err := a.getJob(ctx, jobName)
+	if err != nil {
+		return nil, err
+	}
+
+	buildIDs, err := j.GetAllBuildIds(ctx)
+	if err != nil {
+		adapterdriven.LogError(ctx, a.name, "list_builds", err)
+		return nil, err
+	}
+	if limit > 0 && len(buildIDs) > limit {
+		buildIDs = buildIDs[:limit]
+	}
+
+	runs := make([]domain.CIRun, 0, len(buildIDs))
+	for _, bid := range buildIDs {
+		b, err := j.GetBuild(ctx, bid.Number)
+		if err != nil {
+			continue
+		}
+		runs = append(runs, *a.mapBuild(ctx, b))
+	}
+
+	adapterdriven.LogOpDone(ctx, a.name, "list_builds",
+		slog.Duration(adapterdriven.LogKeyElapsed, time.Since(start)),
+		slog.Int(adapterdriven.LogKeyCount, len(runs)))
+	return runs, nil
+}
+
 func (a *Adapter) getJob(ctx context.Context, name string) (*gojenkins.Job, error) {
 	parts := strings.Split(name, "/")
 	id := parts[len(parts)-1]

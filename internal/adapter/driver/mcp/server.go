@@ -28,7 +28,12 @@ Actions:
   backends          — List available CI backend names
   ci_check          — Check latest CI run status for a job
   ci_verdict        — Get structured pass/fail verdict with failure context
-  ci_redeploy       — Trigger redeployment of a CI job`
+  ci_redeploy       — Trigger redeployment of a CI job
+  ci_trigger        — Trigger a build with custom parameters, returns queue_id and build_number
+  ci_params         — Get parameters from a specific build number (clone-and-override workflow)
+  ci_history        — List recent builds for a job with status
+  ci_log            — Get console output for a specific build number
+  ci_poll           — Resolve a queue ID to a build number`
 
 type ContyService interface {
 	driver.PipelineService
@@ -58,12 +63,15 @@ func RegisterTools(srv *mcpserver.Server, svc ContyService) {
 var contySchema = json.RawMessage(`{
 	"type": "object",
 	"properties": {
-		"action":  {"type": "string", "enum": ["pipeline_trigger","pipeline_status","step_log","pipelines","backends","ci_check","ci_verdict","ci_redeploy"], "description": "Action to perform"},
+		"action":  {"type": "string", "enum": ["pipeline_trigger","pipeline_status","step_log","pipelines","backends","ci_check","ci_verdict","ci_redeploy","ci_trigger","ci_params","ci_history","ci_log","ci_poll"], "description": "Action to perform"},
 		"name":    {"type": "string", "description": "Pipeline name (pipeline_trigger, pipeline_status, step_log)"},
 		"step":    {"type": "integer", "description": "Step index for step_log (0-based)"},
 		"backend": {"type": "string", "description": "Backend name (ci_check, ci_verdict, ci_redeploy)"},
 		"job_ref": {"type": "string", "description": "Job reference path (ci_check, ci_verdict, ci_redeploy). Use plain job name e.g. 'ocp-baremetal-ipi-deployment', or folder/name e.g. 'CI/far-edge-vran-deployment'"},
-		"params":  {"type": "object", "description": "Build parameters as key-value pairs (ci_redeploy, pipeline_trigger). Example: {\"OPENSHIFT_RELEASE_IMAGE\": \"quay.io/ocp/release:4.22-nightly\"}"}
+		"params":  {"type": "object", "description": "Build parameters as key-value pairs (ci_trigger, ci_redeploy). Example: {\"OPENSHIFT_RELEASE_IMAGE\": \"quay.io/ocp/release:4.22-nightly\"}"},
+		"run_id":  {"type": "string", "description": "Build/run number (ci_params, ci_log)"},
+		"queue_id": {"type": "string", "description": "Queue item ID from ci_trigger/ci_redeploy (ci_poll)"},
+		"limit":   {"type": "integer", "description": "Max results (ci_history, default 10)"}
 	},
 	"required": ["action"]
 }`)
@@ -82,6 +90,9 @@ type contyArgs struct {
 	Backend string            `json:"backend"`
 	JobRef  string            `json:"job_ref"`
 	Params  map[string]string `json:"params"`
+	RunID   string            `json:"run_id"`
+	QueueID string            `json:"queue_id"`
+	Limit   int               `json:"limit"`
 }
 
 func contyHandler(svc ContyService) server.Handler {
@@ -170,6 +181,77 @@ func contyHandler(svc ContyService) server.Handler {
 				return tool.Result{}, err
 			}
 			return server.JSONResult(map[string]string{"run_id": runID})
+
+		case "ci_trigger":
+			if args.Backend == "" {
+				return tool.Result{}, errBackendRequired
+			}
+			if args.JobRef == "" {
+				return tool.Result{}, errJobRefRequired
+			}
+			result, err := svc.CITrigger(ctx, args.Backend, args.JobRef, args.Params)
+			if err != nil {
+				return tool.Result{}, err
+			}
+			return server.JSONResult(result)
+
+		case "ci_params":
+			if args.Backend == "" {
+				return tool.Result{}, errBackendRequired
+			}
+			if args.JobRef == "" {
+				return tool.Result{}, errJobRefRequired
+			}
+			if args.RunID == "" {
+				return tool.Result{}, fmt.Errorf("run_id parameter is required")
+			}
+			params, err := svc.CIParams(ctx, args.Backend, args.JobRef, args.RunID)
+			if err != nil {
+				return tool.Result{}, err
+			}
+			return server.JSONResult(params)
+
+		case "ci_history":
+			if args.Backend == "" {
+				return tool.Result{}, errBackendRequired
+			}
+			if args.JobRef == "" {
+				return tool.Result{}, errJobRefRequired
+			}
+			builds, err := svc.CIHistory(ctx, args.Backend, args.JobRef, args.Limit)
+			if err != nil {
+				return tool.Result{}, err
+			}
+			return server.JSONResult(builds)
+
+		case "ci_log":
+			if args.Backend == "" {
+				return tool.Result{}, errBackendRequired
+			}
+			if args.JobRef == "" {
+				return tool.Result{}, errJobRefRequired
+			}
+			if args.RunID == "" {
+				return tool.Result{}, fmt.Errorf("run_id parameter is required")
+			}
+			log, err := svc.CILog(ctx, args.Backend, args.JobRef, args.RunID)
+			if err != nil {
+				return tool.Result{}, err
+			}
+			return tool.TextResult(log), nil
+
+		case "ci_poll":
+			if args.Backend == "" {
+				return tool.Result{}, errBackendRequired
+			}
+			if args.QueueID == "" {
+				return tool.Result{}, fmt.Errorf("queue_id parameter is required")
+			}
+			buildNum, err := svc.CIPoll(ctx, args.Backend, args.QueueID)
+			if err != nil {
+				return tool.Result{}, err
+			}
+			return server.JSONResult(map[string]string{"build_number": buildNum})
 
 		default:
 			return tool.Result{}, fmt.Errorf("%w: %s", errUnknownAction, args.Action)

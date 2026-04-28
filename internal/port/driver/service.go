@@ -19,4 +19,9 @@ type CIMonitorService interface {
 	GetVerdict(ctx context.Context, backend, jobRef string) (*domain.CIVerdict, error)
 	TriggerRedeploy(ctx context.Context, backend, jobRef string) (string, error)
 	TriggerRedeployWithParams(ctx context.Context, backend, jobRef string, params map[string]string) (string, error)
+	CITrigger(ctx context.Context, backend, jobRef string, params map[string]string) (*domain.TriggerResult, error)
+	CIParams(ctx context.Context, backend, jobRef, runID string) (map[string]string, error)
+	CIHistory(ctx context.Context, backend, jobRef string, limit int) ([]domain.CIRun, error)
+	CILog(ctx context.Context, backend, jobRef, runID string) (string, error)
+	CIPoll(ctx context.Context, backend, queueID string) (string, error)
 }

@@ -224,6 +224,62 @@ func (s *Service) TriggerRedeployWithParams(ctx context.Context, backend, jobRef
 	return a.TriggerRun(ctx, jobRef, params)
 }
 
+func (s *Service) CITrigger(ctx context.Context, backend, jobRef string, params map[string]string) (*domain.TriggerResult, error) {
+	a, err := s.adapter(backend)
+	if err != nil {
+		return nil, err
+	}
+	queueID, err := a.TriggerRun(ctx, jobRef, params)
+	if err != nil {
+		return nil, err
+	}
+	result := &domain.TriggerResult{
+		QueueID: queueID,
+		JobRef:  jobRef,
+		Backend: backend,
+	}
+	buildNum, err := a.PollQueue(ctx, queueID)
+	if err == nil && buildNum != "" {
+		result.BuildNumber = buildNum
+	}
+	return result, nil
+}
+
+func (s *Service) CIParams(ctx context.Context, backend, jobRef, runID string) (map[string]string, error) {
+	a, err := s.adapter(backend)
+	if err != nil {
+		return nil, err
+	}
+	return a.GetBuildParams(ctx, jobRef, runID)
+}
+
+func (s *Service) CIHistory(ctx context.Context, backend, jobRef string, limit int) ([]domain.CIRun, error) {
+	a, err := s.adapter(backend)
+	if err != nil {
+		return nil, err
+	}
+	if limit <= 0 {
+		limit = 10
+	}
+	return a.ListBuilds(ctx, jobRef, limit)
+}
+
+func (s *Service) CILog(ctx context.Context, backend, jobRef, runID string) (string, error) {
+	a, err := s.adapter(backend)
+	if err != nil {
+		return "", err
+	}
+	return a.GetJobLog(ctx, jobRef, runID)
+}
+
+func (s *Service) CIPoll(ctx context.Context, backend, queueID string) (string, error) {
+	a, err := s.adapter(backend)
+	if err != nil {
+		return "", err
+	}
+	return a.PollQueue(ctx, queueID)
+}
+
 func (s *Service) classifyFailure(ctx context.Context, a driven.CIAdapter, jobRef, runID string) *domain.FailureContext {
 	fc := &domain.FailureContext{
 		Classification: domain.FailureUnknown,
