@@ -15,7 +15,7 @@ import (
 
 const (
 	serverName    = "conty"
-	serverVersion = "0.1.0"
+	serverVersion = "0.4.0"
 )
 
 var serverInstructions = `Conty — AI-driven CI/CD execution tool. Single point for deploying lab environments and analyzing CI results.
