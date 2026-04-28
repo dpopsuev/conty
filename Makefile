@@ -1,5 +1,7 @@
-BINARY := conty
-GOBIN  ?= $(shell go env GOBIN)
+BINARY  := conty
+VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+LDFLAGS := -ldflags "-X github.com/dpopsuev/conty/internal/adapter/driver/mcp.Version=$(VERSION)"
+GOBIN   ?= $(shell go env GOBIN)
 ifeq ($(GOBIN),)
 GOBIN = $(shell go env GOPATH)/bin
 endif
@@ -7,7 +9,7 @@ endif
 .PHONY: build install test test-integration lint preflight clean
 
 build:
-	go build -o bin/$(BINARY) .
+	go build $(LDFLAGS) -o bin/$(BINARY) .
 
 install: build
 	cp bin/$(BINARY) $(GOBIN)/$(BINARY)

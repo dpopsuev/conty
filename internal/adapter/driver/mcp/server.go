@@ -6,6 +6,9 @@ import (
 	"errors"
 	"fmt"
 
+	"log"
+	"net/http"
+
 	"github.com/dpopsuev/conty/internal/port/driver"
 	"github.com/dpopsuev/battery/mcpserver"
 	"github.com/dpopsuev/battery/server"
@@ -13,10 +16,9 @@ import (
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-const (
-	serverName    = "conty"
-	serverVersion = "0.4.0"
-)
+const serverName = "conty"
+
+var Version = "dev"
 
 var serverInstructions = `Conty — AI-driven CI/CD execution tool. Single point for deploying lab environments and analyzing CI results.
 
@@ -41,10 +43,23 @@ type ContyService interface {
 }
 
 func Serve(svc ContyService) error {
-	srv := mcpserver.NewServer(serverName, serverVersion).
+	srv := mcpserver.NewServer(serverName, Version).
 		WithInstructions(serverInstructions)
 	RegisterTools(srv, svc)
 	return srv.Serve(context.Background(), &sdkmcp.StdioTransport{})
+}
+
+func ServeHTTP(svc ContyService, addr string) error {
+	srv := mcpserver.NewServer(serverName, Version).
+		WithInstructions(serverInstructions)
+	RegisterTools(srv, svc)
+
+	handler := sdkmcp.NewStreamableHTTPHandler(func(_ *http.Request) *sdkmcp.Server {
+		return srv.SDK()
+	}, nil)
+
+	log.Printf("conty v%s listening on %s", Version, addr)
+	return http.ListenAndServe(addr, handler)
 }
 
 func RegisterTools(srv *mcpserver.Server, svc ContyService) {

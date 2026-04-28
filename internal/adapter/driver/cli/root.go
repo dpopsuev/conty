@@ -61,11 +61,15 @@ var checkCmd = &cobra.Command{
 
 var serveCmd = &cobra.Command{
 	Use:   "serve",
-	Short: "Start MCP server",
-	RunE: func(_ *cobra.Command, _ []string) error {
+	Short: "Start MCP server (stdio or HTTP)",
+	RunE: func(cmd *cobra.Command, _ []string) error {
 		svc, err := newService()
 		if err != nil {
 			return err
+		}
+		addr, _ := cmd.Flags().GetString("addr")
+		if addr != "" {
+			return mcpserver.ServeHTTP(svc, addr)
 		}
 		return mcpserver.Serve(svc)
 	},
@@ -74,6 +78,7 @@ var serveCmd = &cobra.Command{
 func init() {
 	rootCmd.PersistentFlags().StringVarP(&flagConfig, "config", "c", "", "config file path")
 	checkCmd.Flags().StringP("backend", "b", "", "backend name")
+	serveCmd.Flags().String("addr", "", "HTTP listen address (e.g. :8082). Omit for stdio")
 	rootCmd.AddCommand(deployCmd, checkCmd, serveCmd)
 }
 
