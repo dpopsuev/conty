@@ -22,6 +22,7 @@ type Service struct {
 	adapters  map[string]driven.CIAdapter
 	pipelines map[string]domain.Pipeline
 	runs      map[string]*domain.PipelineRun
+	owned     map[string]domain.OwnedRun
 	mu        sync.RWMutex
 }
 
@@ -30,6 +31,7 @@ func NewService(adapters ...driven.CIAdapter) *Service {
 		adapters:  make(map[string]driven.CIAdapter, len(adapters)),
 		pipelines: make(map[string]domain.Pipeline),
 		runs:      make(map[string]*domain.PipelineRun),
+		owned:     make(map[string]domain.OwnedRun),
 	}
 	for _, a := range adapters {
 		s.adapters[a.Name()] = a
@@ -221,7 +223,17 @@ func (s *Service) TriggerRedeployWithParams(ctx context.Context, backend, jobRef
 	if err != nil {
 		return "", err
 	}
-	return a.TriggerRun(ctx, jobRef, params)
+	queueID, err := a.TriggerRun(ctx, jobRef, params)
+	if err != nil {
+		return "", err
+	}
+	buildNum, pollErr := a.PollQueue(ctx, queueID)
+	if pollErr == nil && buildNum != "" {
+		s.recordOwnership(backend, jobRef, buildNum, queueID)
+		return buildNum, nil
+	}
+	s.recordOwnership(backend, jobRef, queueID, queueID)
+	return queueID, nil
 }
 
 func (s *Service) CITrigger(ctx context.Context, backend, jobRef string, params map[string]string) (*domain.TriggerResult, error) {
@@ -241,7 +253,19 @@ func (s *Service) CITrigger(ctx context.Context, backend, jobRef string, params 
 	buildNum, err := a.PollQueue(ctx, queueID)
 	if err == nil && buildNum != "" {
 		result.BuildNumber = buildNum
+		s.recordOwnership(backend, jobRef, buildNum, queueID)
 	}
+
+	est, _ := a.GetEstimatedDuration(ctx, jobRef)
+	if est > 0 {
+		result.EstimatedDuration = est
+		interval := est / 20
+		if interval < 60000 {
+			interval = 60000
+		}
+		result.PollInterval = interval
+	}
+
 	return result, nil
 }
 
@@ -278,6 +302,65 @@ func (s *Service) CIPoll(ctx context.Context, backend, queueID string) (string, 
 		return "", err
 	}
 	return a.PollQueue(ctx, queueID)
+}
+
+func (s *Service) recordOwnership(backend, jobRef, buildNumber, queueID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := backend + ":" + buildNumber
+	s.owned[key] = domain.OwnedRun{
+		Backend:     backend,
+		JobRef:      jobRef,
+		BuildNumber: buildNumber,
+		QueueID:     queueID,
+	}
+}
+
+func (s *Service) OwnsRun(backend, buildNumber string) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	_, ok := s.owned[backend+":"+buildNumber]
+	return ok
+}
+
+func (s *Service) ListOwnedRuns() []domain.OwnedRun {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	runs := make([]domain.OwnedRun, 0, len(s.owned))
+	for _, r := range s.owned {
+		runs = append(runs, r)
+	}
+	return runs
+}
+
+func (s *Service) CIWatch(ctx context.Context, backend, jobRef, runID string) (*domain.WatchStatus, error) {
+	a, err := s.adapter(backend)
+	if err != nil {
+		return nil, err
+	}
+
+	run, err := a.PollRun(ctx, jobRef, runID)
+	if err != nil {
+		return nil, err
+	}
+
+	estimated, _ := a.GetEstimatedDuration(ctx, jobRef)
+
+	ws := &domain.WatchStatus{
+		BuildNumber: run.ID,
+		JobRef:      jobRef,
+		Backend:     backend,
+		Status:      run.Status,
+		Elapsed:     run.Duration,
+		Estimated:   estimated,
+	}
+
+	if estimated > 0 {
+		ws.Progress = float64(run.Duration) / float64(estimated) * 100
+		ws.Overdue = float64(run.Duration) > float64(estimated)*1.5
+	}
+
+	return ws, nil
 }
 
 func (s *Service) classifyFailure(ctx context.Context, a driven.CIAdapter, jobRef, runID string) *domain.FailureContext {

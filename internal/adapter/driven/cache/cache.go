@@ -124,6 +124,19 @@ func (a *Adapter) GetJobLog(ctx context.Context, jobName string, runID string) (
 	return log, nil
 }
 
+func (a *Adapter) GetEstimatedDuration(ctx context.Context, jobName string) (int64, error) {
+	key := fmt.Sprintf("estdur:%s", jobName)
+	if v, ok := a.get(key); ok {
+		return v.(int64), nil
+	}
+	d, err := a.inner.GetEstimatedDuration(ctx, jobName)
+	if err != nil {
+		return 0, err
+	}
+	a.put(key, d, a.logTTL)
+	return d, nil
+}
+
 func (a *Adapter) PollQueue(ctx context.Context, queueID string) (string, error) {
 	return a.inner.PollQueue(ctx, queueID)
 }

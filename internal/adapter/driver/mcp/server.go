@@ -35,7 +35,9 @@ Actions:
   ci_params         — Get parameters from a specific build number (clone-and-override workflow)
   ci_history        — List recent builds for a job with status
   ci_log            — Get console output for a specific build number
-  ci_poll           — Resolve a queue ID to a build number`
+  ci_poll           — Resolve a queue ID to a build number
+  ci_watch          — Watch a build: status, progress %, overdue flag (uses estimated duration)
+  ci_owned          — List builds triggered by this Conty session`
 
 type ContyService interface {
 	driver.PipelineService
@@ -78,7 +80,7 @@ func RegisterTools(srv *mcpserver.Server, svc ContyService) {
 var contySchema = json.RawMessage(`{
 	"type": "object",
 	"properties": {
-		"action":  {"type": "string", "enum": ["pipeline_trigger","pipeline_status","step_log","pipelines","backends","ci_check","ci_verdict","ci_redeploy","ci_trigger","ci_params","ci_history","ci_log","ci_poll"], "description": "Action to perform"},
+		"action":  {"type": "string", "enum": ["pipeline_trigger","pipeline_status","step_log","pipelines","backends","ci_check","ci_verdict","ci_redeploy","ci_trigger","ci_params","ci_history","ci_log","ci_poll","ci_watch","ci_owned"], "description": "Action to perform"},
 		"name":    {"type": "string", "description": "Pipeline name (pipeline_trigger, pipeline_status, step_log)"},
 		"step":    {"type": "integer", "description": "Step index for step_log (0-based)"},
 		"backend": {"type": "string", "description": "Backend name (ci_check, ci_verdict, ci_redeploy)"},
@@ -267,6 +269,25 @@ func contyHandler(svc ContyService) server.Handler {
 				return tool.Result{}, err
 			}
 			return server.JSONResult(map[string]string{"build_number": buildNum})
+
+		case "ci_watch":
+			if args.Backend == "" {
+				return tool.Result{}, errBackendRequired
+			}
+			if args.JobRef == "" {
+				return tool.Result{}, errJobRefRequired
+			}
+			if args.RunID == "" {
+				return tool.Result{}, fmt.Errorf("run_id parameter is required")
+			}
+			status, err := svc.CIWatch(ctx, args.Backend, args.JobRef, args.RunID)
+			if err != nil {
+				return tool.Result{}, err
+			}
+			return server.JSONResult(status)
+
+		case "ci_owned":
+			return server.JSONResult(svc.ListOwnedRuns())
 
 		default:
 			return tool.Result{}, fmt.Errorf("%w: %s", errUnknownAction, args.Action)

@@ -286,6 +286,113 @@ func TestCIPoll_ResolvesQueueToBuild(t *testing.T) {
 	}
 }
 
+func TestOwnership_CITriggerRecordsOwnership(t *testing.T) {
+	stub := stubAdapter()
+	stub.QueueID = "build-42"
+	svc := app.NewService(stub)
+
+	result, err := svc.CITrigger(context.Background(), "test", "my-job", nil)
+	if err != nil {
+		t.Fatalf("CITrigger: %v", err)
+	}
+
+	if !svc.OwnsRun("test", result.BuildNumber) {
+		t.Error("expected service to own the triggered build")
+	}
+	if svc.OwnsRun("test", "99999") {
+		t.Error("should not own a build it didn't trigger")
+	}
+}
+
+func TestOwnership_RedeployRecordsOwnership(t *testing.T) {
+	stub := stubAdapter()
+	stub.QueueID = "build-55"
+	svc := app.NewService(stub)
+
+	runID, err := svc.TriggerRedeployWithParams(context.Background(), "test", "my-job", nil)
+	if err != nil {
+		t.Fatalf("TriggerRedeployWithParams: %v", err)
+	}
+	if !svc.OwnsRun("test", runID) {
+		t.Error("expected service to own the redeployed build")
+	}
+}
+
+func TestOwnership_ListOwnedRuns(t *testing.T) {
+	stub := stubAdapter()
+	svc := app.NewService(stub)
+
+	stub.QueueID = "build-1"
+	svc.CITrigger(context.Background(), "test", "job-a", nil)
+	stub.QueueID = "build-2"
+	svc.CITrigger(context.Background(), "test", "job-b", nil)
+
+	owned := svc.ListOwnedRuns()
+	if len(owned) != 2 {
+		t.Fatalf("ListOwnedRuns() = %d, want 2", len(owned))
+	}
+}
+
+func TestWatcher_CITriggerReturnsEstimatedDuration(t *testing.T) {
+	stub := stubAdapter()
+	stub.QueueID = "build-42"
+	stub.Run.Duration = 7200000
+	stub.EstimatedDuration = 7200000
+	svc := app.NewService(stub)
+
+	result, err := svc.CITrigger(context.Background(), "test", "my-job", nil)
+	if err != nil {
+		t.Fatalf("CITrigger: %v", err)
+	}
+	if result.EstimatedDuration == 0 {
+		t.Error("expected estimated_duration from trigger result")
+	}
+	if result.PollInterval == 0 {
+		t.Error("expected poll_interval (5% of estimated)")
+	}
+}
+
+func TestWatcher_CIWatch(t *testing.T) {
+	stub := stubAdapter()
+	stub.Run = &domain.CIRun{
+		ID:       "42",
+		Status:   domain.RunStatusRunning,
+		Duration: 3600000,
+	}
+	stub.EstimatedDuration = 7200000
+	svc := app.NewService(stub)
+
+	status, err := svc.CIWatch(context.Background(), "test", "my-job", "42")
+	if err != nil {
+		t.Fatalf("CIWatch: %v", err)
+	}
+	if status.Progress == 0 {
+		t.Error("expected progress > 0")
+	}
+	if status.Overdue {
+		t.Error("50% elapsed should not be overdue")
+	}
+}
+
+func TestWatcher_CIWatch_Overdue(t *testing.T) {
+	stub := stubAdapter()
+	stub.Run = &domain.CIRun{
+		ID:       "42",
+		Status:   domain.RunStatusRunning,
+		Duration: 12000000,
+	}
+	stub.EstimatedDuration = 7200000
+	svc := app.NewService(stub)
+
+	status, err := svc.CIWatch(context.Background(), "test", "my-job", "42")
+	if err != nil {
+		t.Fatalf("CIWatch: %v", err)
+	}
+	if !status.Overdue {
+		t.Error("167% elapsed should be overdue")
+	}
+}
+
 func TestBackendNotFound(t *testing.T) {
 	svc := app.NewService()
 	_, err := svc.CheckLatest(context.Background(), "nonexistent", "job")

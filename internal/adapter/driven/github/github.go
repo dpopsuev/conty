@@ -249,6 +249,10 @@ func (a *Adapter) GetArtifact(ctx context.Context, _ string, _ string, path stri
 	return data, nil
 }
 
+func (a *Adapter) GetEstimatedDuration(_ context.Context, _ string) (int64, error) {
+	return 0, nil
+}
+
 func (a *Adapter) PollQueue(_ context.Context, _ string) (string, error) {
 	return "", fmt.Errorf("%w: GitHub Actions uses run IDs, not queue IDs", ErrNotFound)
 }

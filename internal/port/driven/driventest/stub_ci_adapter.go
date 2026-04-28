@@ -42,17 +42,18 @@ type GetArtifactCall struct {
 }
 
 type StubCIAdapter struct {
-	NameVal     string
-	RunID       string
-	QueueID     string
-	Run         *domain.CIRun
-	Jobs        []domain.CIJob
-	Log         string
-	Artifacts   []domain.CIArtifact
-	Artifact    []byte
-	BuildParams map[string]string
-	Builds      []domain.CIRun
-	Err         error
+	NameVal           string
+	RunID             string
+	QueueID           string
+	Run               *domain.CIRun
+	Jobs              []domain.CIJob
+	Log               string
+	Artifacts         []domain.CIArtifact
+	Artifact          []byte
+	BuildParams       map[string]string
+	Builds            []domain.CIRun
+	EstimatedDuration int64
+	Err               error
 
 	TriggerRunErr    error
 	PollRunErr       error
@@ -150,6 +151,10 @@ func (s *StubCIAdapter) ListBuilds(_ context.Context, _ string, _ int) ([]domain
 		return nil, s.ListBuildsErr
 	}
 	return s.Builds, nil
+}
+
+func (s *StubCIAdapter) GetEstimatedDuration(_ context.Context, _ string) (int64, error) {
+	return s.EstimatedDuration, nil
 }
 
 func (s *StubCIAdapter) ListArtifacts(_ context.Context, jobName, runID string) ([]domain.CIArtifact, error) {

@@ -253,6 +253,18 @@ func (a *Adapter) GetArtifact(ctx context.Context, jobName string, runID string,
 	return data, nil
 }
 
+func (a *Adapter) GetEstimatedDuration(ctx context.Context, jobName string) (int64, error) {
+	j, err := a.getJob(ctx, jobName)
+	if err != nil {
+		return 0, err
+	}
+	b, err := j.GetLastBuild(ctx)
+	if err != nil {
+		return 0, nil
+	}
+	return int64(b.Raw.EstimatedDuration), nil
+}
+
 func (a *Adapter) PollQueue(ctx context.Context, queueID string) (string, error) {
 	start := time.Now()
 	adapterdriven.LogOp(ctx, a.name, "poll_queue", slog.String("queue_id", queueID))

@@ -240,6 +240,10 @@ func (a *Adapter) GetArtifact(ctx context.Context, _ string, runID string, path 
 	return data, nil
 }
 
+func (a *Adapter) GetEstimatedDuration(_ context.Context, _ string) (int64, error) {
+	return 0, nil
+}
+
 func (a *Adapter) PollQueue(_ context.Context, _ string) (string, error) {
 	return "", fmt.Errorf("%w: GitLab CI uses pipeline IDs, not queue IDs", ErrNotFound)
 }

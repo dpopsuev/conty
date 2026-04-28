@@ -141,3 +141,15 @@ func (s *StubCIMonitorService) CILog(_ context.Context, _, _, _ string) (string,
 func (s *StubCIMonitorService) CIPoll(_ context.Context, _, _ string) (string, error) {
 	return "", s.Err
 }
+
+func (s *StubCIMonitorService) CIWatch(_ context.Context, _, _, _ string) (*domain.WatchStatus, error) {
+	return nil, s.Err
+}
+
+func (s *StubCIMonitorService) OwnsRun(_, _ string) bool {
+	return false
+}
+
+func (s *StubCIMonitorService) ListOwnedRuns() []domain.OwnedRun {
+	return nil
+}
