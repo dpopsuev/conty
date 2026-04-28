@@ -62,7 +62,8 @@ var contySchema = json.RawMessage(`{
 		"name":    {"type": "string", "description": "Pipeline name (pipeline_trigger, pipeline_status, step_log)"},
 		"step":    {"type": "integer", "description": "Step index for step_log (0-based)"},
 		"backend": {"type": "string", "description": "Backend name (ci_check, ci_verdict, ci_redeploy)"},
-		"job_ref": {"type": "string", "description": "Job reference path (ci_check, ci_verdict, ci_redeploy)"}
+		"job_ref": {"type": "string", "description": "Job reference path (ci_check, ci_verdict, ci_redeploy). Use plain job name e.g. 'ocp-baremetal-ipi-deployment', or folder/name e.g. 'CI/far-edge-vran-deployment'"},
+		"params":  {"type": "object", "description": "Build parameters as key-value pairs (ci_redeploy, pipeline_trigger). Example: {\"OPENSHIFT_RELEASE_IMAGE\": \"quay.io/ocp/release:4.22-nightly\"}"}
 	},
 	"required": ["action"]
 }`)
@@ -75,11 +76,12 @@ var (
 )
 
 type contyArgs struct {
-	Action  string `json:"action"`
-	Name    string `json:"name"`
-	Step    int    `json:"step"`
-	Backend string `json:"backend"`
-	JobRef  string `json:"job_ref"`
+	Action  string            `json:"action"`
+	Name    string            `json:"name"`
+	Step    int               `json:"step"`
+	Backend string            `json:"backend"`
+	JobRef  string            `json:"job_ref"`
+	Params  map[string]string `json:"params"`
 }
 
 func contyHandler(svc ContyService) server.Handler {
@@ -163,7 +165,7 @@ func contyHandler(svc ContyService) server.Handler {
 			if args.JobRef == "" {
 				return tool.Result{}, errJobRefRequired
 			}
-			runID, err := svc.TriggerRedeploy(ctx, args.Backend, args.JobRef)
+			runID, err := svc.TriggerRedeployWithParams(ctx, args.Backend, args.JobRef, args.Params)
 			if err != nil {
 				return tool.Result{}, err
 			}

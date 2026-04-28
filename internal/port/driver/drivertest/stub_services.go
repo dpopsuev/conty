@@ -112,3 +112,10 @@ func (s *StubCIMonitorService) TriggerRedeploy(_ context.Context, backend, jobRe
 	s.RedeployCalls = append(s.RedeployCalls, RedeployCall{Backend: backend, JobRef: jobRef})
 	return s.RunID, s.Err
 }
+
+func (s *StubCIMonitorService) TriggerRedeployWithParams(_ context.Context, backend, jobRef string, _ map[string]string) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.RedeployCalls = append(s.RedeployCalls, RedeployCall{Backend: backend, JobRef: jobRef})
+	return s.RunID, s.Err
+}

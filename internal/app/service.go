@@ -213,11 +213,15 @@ func (s *Service) GetVerdict(ctx context.Context, backend, jobRef string) (*doma
 }
 
 func (s *Service) TriggerRedeploy(ctx context.Context, backend, jobRef string) (string, error) {
+	return s.TriggerRedeployWithParams(ctx, backend, jobRef, nil)
+}
+
+func (s *Service) TriggerRedeployWithParams(ctx context.Context, backend, jobRef string, params map[string]string) (string, error) {
 	a, err := s.adapter(backend)
 	if err != nil {
 		return "", err
 	}
-	return a.TriggerRun(ctx, jobRef, nil)
+	return a.TriggerRun(ctx, jobRef, params)
 }
 
 func (s *Service) classifyFailure(ctx context.Context, a driven.CIAdapter, jobRef, runID string) *domain.FailureContext {

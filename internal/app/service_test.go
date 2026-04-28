@@ -169,6 +169,37 @@ func TestGetVerdict_Failure(t *testing.T) {
 	}
 }
 
+func TestTriggerRedeploy_WithParams(t *testing.T) {
+	stub := stubAdapter()
+	svc := app.NewService(stub)
+
+	params := map[string]string{"OPENSHIFT_RELEASE_IMAGE": "quay.io/ocp/release:4.22-nightly"}
+	_, err := svc.TriggerRedeployWithParams(context.Background(), "test", "ocp-baremetal-ipi-deployment", params)
+	if err != nil {
+		t.Fatalf("TriggerRedeployWithParams: %v", err)
+	}
+	if len(stub.TriggerRunCalls) != 1 {
+		t.Fatalf("TriggerRun called %d times, want 1", len(stub.TriggerRunCalls))
+	}
+	call := stub.TriggerRunCalls[0]
+	if call.Params["OPENSHIFT_RELEASE_IMAGE"] != "quay.io/ocp/release:4.22-nightly" {
+		t.Errorf("params = %v, want OPENSHIFT_RELEASE_IMAGE set", call.Params)
+	}
+}
+
+func TestTriggerRedeploy_NilParamsFallsBack(t *testing.T) {
+	stub := stubAdapter()
+	svc := app.NewService(stub)
+
+	_, err := svc.TriggerRedeployWithParams(context.Background(), "test", "some-job", nil)
+	if err != nil {
+		t.Fatalf("TriggerRedeployWithParams: %v", err)
+	}
+	if stub.TriggerRunCalls[0].Params != nil {
+		t.Errorf("expected nil params, got %v", stub.TriggerRunCalls[0].Params)
+	}
+}
+
 func TestBackendNotFound(t *testing.T) {
 	svc := app.NewService()
 	_, err := svc.CheckLatest(context.Background(), "nonexistent", "job")
