@@ -60,7 +60,7 @@ func ServeHTTP(svc ContyService, addr string) error {
 		return srv.SDK()
 	}, nil)
 
-	log.Printf("conty v%s listening on %s", Version, addr)
+	log.Printf("conty %s listening on %s", Version, addr)
 	return http.ListenAndServe(addr, handler)
 }
 
