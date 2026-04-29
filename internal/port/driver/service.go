@@ -25,6 +25,9 @@ type CIMonitorService interface {
 	CILog(ctx context.Context, backend, jobRef, runID string) (string, error)
 	CIPoll(ctx context.Context, backend, queueID string) (string, error)
 	CIWatch(ctx context.Context, backend, jobRef, runID string) (*domain.WatchStatus, error)
+	CIArtifacts(ctx context.Context, backend, jobRef, runID string) ([]domain.CIArtifact, error)
+	CIArtifactGet(ctx context.Context, backend, jobRef, runID, path string) ([]byte, error)
 	OwnsRun(backend, buildNumber string) bool
 	ListOwnedRuns() []domain.OwnedRun
+	BackendInfo() []domain.BackendInfo
 }

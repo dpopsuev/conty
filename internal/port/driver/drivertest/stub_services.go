@@ -153,3 +153,15 @@ func (s *StubCIMonitorService) OwnsRun(_, _ string) bool {
 func (s *StubCIMonitorService) ListOwnedRuns() []domain.OwnedRun {
 	return nil
 }
+
+func (s *StubCIMonitorService) CIArtifacts(_ context.Context, _, _, _ string) ([]domain.CIArtifact, error) {
+	return nil, s.Err
+}
+
+func (s *StubCIMonitorService) CIArtifactGet(_ context.Context, _, _, _, _ string) ([]byte, error) {
+	return nil, s.Err
+}
+
+func (s *StubCIMonitorService) BackendInfo() []domain.BackendInfo {
+	return nil
+}

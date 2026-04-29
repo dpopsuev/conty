@@ -426,3 +426,42 @@ func TestListBackends_EmptyWhenNone(t *testing.T) {
 		t.Errorf("ListBackends() = %v, want empty", backends)
 	}
 }
+
+func TestCIArtifacts_ListAndGet(t *testing.T) {
+	stub := stubAdapter()
+	stub.Artifacts = []domain.CIArtifact{
+		{Name: "report.xml", Path: "artifacts/report.xml", Size: 1024},
+		{Name: "log.txt", Path: "artifacts/log.txt", Size: 512},
+	}
+	stub.Artifact = []byte("<xml>test report</xml>")
+	svc := app.NewService(stub)
+
+	artifacts, err := svc.CIArtifacts(context.Background(), "test", "my-job", "42")
+	if err != nil {
+		t.Fatalf("CIArtifacts: %v", err)
+	}
+	if len(artifacts) != 2 {
+		t.Fatalf("got %d artifacts, want 2", len(artifacts))
+	}
+
+	data, err := svc.CIArtifactGet(context.Background(), "test", "my-job", "42", "artifacts/report.xml")
+	if err != nil {
+		t.Fatalf("CIArtifactGet: %v", err)
+	}
+	if string(data) != "<xml>test report</xml>" {
+		t.Errorf("artifact content = %q", string(data))
+	}
+}
+
+func TestBackendInfo_ReturnsDetails(t *testing.T) {
+	stub := stubAdapter()
+	svc := app.NewService(stub)
+
+	info := svc.BackendInfo()
+	if len(info) != 1 {
+		t.Fatalf("BackendInfo() = %d, want 1", len(info))
+	}
+	if info[0].Name != "test" {
+		t.Errorf("name = %s, want test", info[0].Name)
+	}
+}

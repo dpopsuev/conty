@@ -173,6 +173,35 @@ func (s *Service) ListPipelines() []string {
 	return names
 }
 
+func (s *Service) BackendInfo() []domain.BackendInfo {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	infos := make([]domain.BackendInfo, 0, len(s.adapters))
+	for _, a := range s.adapters {
+		infos = append(infos, domain.BackendInfo{
+			Name: a.Name(),
+			Type: "ci",
+		})
+	}
+	return infos
+}
+
+func (s *Service) CIArtifacts(ctx context.Context, backend, jobRef, runID string) ([]domain.CIArtifact, error) {
+	a, err := s.adapter(backend)
+	if err != nil {
+		return nil, err
+	}
+	return a.ListArtifacts(ctx, jobRef, runID)
+}
+
+func (s *Service) CIArtifactGet(ctx context.Context, backend, jobRef, runID, path string) ([]byte, error) {
+	a, err := s.adapter(backend)
+	if err != nil {
+		return nil, err
+	}
+	return a.GetArtifact(ctx, jobRef, runID, path)
+}
+
 func (s *Service) CheckLatest(ctx context.Context, backend, jobRef string) (*domain.CICheck, error) {
 	a, err := s.adapter(backend)
 	if err != nil {
