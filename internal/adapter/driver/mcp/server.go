@@ -244,7 +244,7 @@ func contyHandler(svc ContyService) server.Handler {
 			if err != nil {
 				return tool.Result{}, err
 			}
-			return server.JSONResult(builds)
+			return server.JSONResult(map[string]any{"builds": builds})
 
 		case "ci_log":
 			if args.Backend == "" {
@@ -292,7 +292,7 @@ func contyHandler(svc ContyService) server.Handler {
 			return server.JSONResult(status)
 
 		case "ci_owned":
-			return server.JSONResult(svc.ListOwnedRuns())
+			return server.JSONResult(map[string]any{"builds": svc.ListOwnedRuns()})
 
 		case "ci_artifacts":
 			if args.Backend == "" {
@@ -308,7 +308,7 @@ func contyHandler(svc ContyService) server.Handler {
 			if err != nil {
 				return tool.Result{}, err
 			}
-			return server.JSONResult(artifacts)
+			return server.JSONResult(map[string]any{"artifacts": artifacts})
 
 		case "ci_artifact_get":
 			if args.Backend == "" {
@@ -330,7 +330,7 @@ func contyHandler(svc ContyService) server.Handler {
 			return tool.TextResult(string(data)), nil
 
 		case "backend_info":
-			return server.JSONResult(svc.BackendInfo())
+			return server.JSONResult(map[string]any{"backends": svc.BackendInfo()})
 
 		default:
 			return tool.Result{}, fmt.Errorf("%w: %s", errUnknownAction, args.Action)
