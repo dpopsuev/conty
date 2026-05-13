@@ -2,6 +2,7 @@ package jenkins
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -44,6 +45,7 @@ func New(ctx context.Context, name, baseURL, user, token string) (*Adapter, erro
 }
 
 func (a *Adapter) Name() string { return a.name }
+func (a *Adapter) Type() string { return BackendName }
 
 func (a *Adapter) TriggerRun(ctx context.Context, jobName string, params map[string]string) (string, error) {
 	start := time.Now()
@@ -328,33 +330,85 @@ func (a *Adapter) GetBuildParams(ctx context.Context, jobName string, runID stri
 	return params, nil
 }
 
+// listBuildsResponse is the minimal Jenkins API shape used by ListBuilds.
+type listBuildsResponse struct {
+	Builds []struct {
+		Number          int64  `json:"number"`
+		Result          string `json:"result"`
+		FullDisplayName string `json:"fullDisplayName"`
+		Timestamp       int64  `json:"timestamp"`
+		Duration        int64  `json:"duration"`
+		URL             string `json:"url"`
+		Building        bool   `json:"building"`
+	} `json:"builds"`
+}
+
 func (a *Adapter) ListBuilds(ctx context.Context, jobName string, limit int) ([]domain.CIRun, error) {
 	start := time.Now()
+	if limit <= 0 {
+		limit = 10
+	}
 	adapterdriven.LogOp(ctx, a.name, "list_builds",
 		slog.String(adapterdriven.LogKeyID, jobName),
 		slog.Int("limit", limit))
 
-	j, err := a.getJob(ctx, jobName)
+	// Build the job URL, handling folder paths (e.g. "CI/my-job" → /job/CI/job/my-job).
+	parts := strings.Split(jobName, "/")
+	var jobPath string
+	for _, p := range parts {
+		jobPath += "/job/" + p
+	}
+	treeParam := fmt.Sprintf(
+		"builds[number,result,fullDisplayName,timestamp,duration,url,building]{0,%d}",
+		limit,
+	)
+	apiURL := strings.TrimRight(a.baseURL, "/") + jobPath +
+		"/api/json?tree=" + treeParam
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiURL, nil)
 	if err != nil {
 		return nil, err
 	}
+	req.SetBasicAuth(a.user, a.token)
 
-	buildIDs, err := j.GetAllBuildIds(ctx)
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		adapterdriven.LogError(ctx, a.name, "list_builds", err)
 		return nil, err
 	}
-	if limit > 0 && len(buildIDs) > limit {
-		buildIDs = buildIDs[:limit]
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("%w: %s (HTTP %d)", ErrJobNotFound, jobName, resp.StatusCode)
 	}
 
-	runs := make([]domain.CIRun, 0, len(buildIDs))
-	for _, bid := range buildIDs {
-		b, err := j.GetBuild(ctx, bid.Number)
-		if err != nil {
-			continue
+	var payload listBuildsResponse
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return nil, fmt.Errorf("list_builds decode: %w", err)
+	}
+
+	runs := make([]domain.CIRun, 0, len(payload.Builds))
+	for _, b := range payload.Builds {
+		status := domain.RunStatusSuccess
+		switch {
+		case b.Building:
+			status = domain.RunStatusRunning
+		case b.Result == "FAILURE":
+			status = domain.RunStatusFailure
+		case b.Result == "ABORTED":
+			status = domain.RunStatusAborted
+		case b.Result == "":
+			status = domain.RunStatusPending
 		}
-		runs = append(runs, *a.mapBuild(ctx, b))
+		runs = append(runs, domain.CIRun{
+			ID:        strconv.FormatInt(b.Number, 10),
+			Name:      b.FullDisplayName,
+			Status:    status,
+			Result:    domain.RunResult(b.Result),
+			URL:       b.URL,
+			StartedAt: time.UnixMilli(b.Timestamp),
+			Duration:  b.Duration,
+		})
 	}
 
 	adapterdriven.LogOpDone(ctx, a.name, "list_builds",
@@ -398,6 +452,37 @@ func (a *Adapter) mapBuild(ctx context.Context, b *gojenkins.Build) *domain.CIRu
 		StartedAt: b.GetTimestamp(),
 		Duration:  int64(b.GetDuration()),
 	}
+}
+
+func (a *Adapter) CancelRun(ctx context.Context, jobName string, runID string) error {
+	adapterdriven.LogOp(ctx, a.name, "cancel_run",
+		slog.String(adapterdriven.LogKeyID, jobName),
+		slog.String("run_id", runID))
+
+	parts := strings.Split(jobName, "/")
+	var jobPath string
+	for _, p := range parts {
+		jobPath += "/job/" + p
+	}
+	stopURL := strings.TrimRight(a.baseURL, "/") + jobPath + "/" + runID + "/stop"
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, stopURL, nil)
+	if err != nil {
+		return err
+	}
+	req.SetBasicAuth(a.user, a.token)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		adapterdriven.LogError(ctx, a.name, "cancel_run", err)
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		return fmt.Errorf("cancel_run %s #%s: HTTP %d", jobName, runID, resp.StatusCode)
+	}
+	return nil
 }
 
 func mapPipelineStatus(status string) domain.RunStatus {

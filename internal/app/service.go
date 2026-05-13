@@ -180,7 +180,7 @@ func (s *Service) BackendInfo() []domain.BackendInfo {
 	for _, a := range s.adapters {
 		infos = append(infos, domain.BackendInfo{
 			Name: a.Name(),
-			Type: "ci",
+			Type: a.Type(),
 		})
 	}
 	return infos
@@ -192,6 +192,17 @@ func (s *Service) CIArtifacts(ctx context.Context, backend, jobRef, runID string
 		return nil, err
 	}
 	return a.ListArtifacts(ctx, jobRef, runID)
+}
+
+func (s *Service) CICancel(ctx context.Context, backend, jobRef, runID string) error {
+	if !s.OwnsRun(backend, runID) {
+		return fmt.Errorf("cannot cancel %s #%s: not owned by this session", jobRef, runID)
+	}
+	a, err := s.adapter(backend)
+	if err != nil {
+		return err
+	}
+	return a.CancelRun(ctx, jobRef, runID)
 }
 
 func (s *Service) CIArtifactGet(ctx context.Context, backend, jobRef, runID, path string) ([]byte, error) {
@@ -415,6 +426,7 @@ func (s *Service) classifyFailure(ctx context.Context, a driven.CIAdapter, jobRe
 			maxLen = len(log)
 		}
 		fc.LogExcerpt = log[len(log)-maxLen:]
+		fc.Classification, fc.CanRetry = classifyLog(fc.LogExcerpt)
 	}
 
 	return fc

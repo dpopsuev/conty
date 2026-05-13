@@ -8,6 +8,7 @@ import (
 
 type CIAdapter interface {
 	Name() string
+	Type() string
 	TriggerRun(ctx context.Context, jobName string, params map[string]string) (string, error)
 	PollRun(ctx context.Context, jobName string, runID string) (*domain.CIRun, error)
 	PollQueue(ctx context.Context, queueID string) (string, error)
@@ -18,4 +19,5 @@ type CIAdapter interface {
 	ListArtifacts(ctx context.Context, jobName string, runID string) ([]domain.CIArtifact, error)
 	GetArtifact(ctx context.Context, jobName string, runID string, path string) ([]byte, error)
 	GetEstimatedDuration(ctx context.Context, jobName string) (int64, error)
+	CancelRun(ctx context.Context, jobName string, runID string) error
 }

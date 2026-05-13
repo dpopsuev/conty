@@ -465,3 +465,66 @@ func TestBackendInfo_ReturnsDetails(t *testing.T) {
 		t.Errorf("name = %s, want test", info[0].Name)
 	}
 }
+
+func TestCICancel_OwnsRun(t *testing.T) {
+	stub := stubAdapter()
+	stub.QueueID = "build-77"
+	svc := app.NewService(stub)
+
+	result, err := svc.CITrigger(context.Background(), "test", "my-job", nil)
+	if err != nil {
+		t.Fatalf("CITrigger: %v", err)
+	}
+
+	if err := svc.CICancel(context.Background(), "test", "my-job", result.BuildNumber); err != nil {
+		t.Errorf("CICancel owned run: %v", err)
+	}
+}
+
+func TestCICancel_NotOwned(t *testing.T) {
+	stub := stubAdapter()
+	svc := app.NewService(stub)
+
+	err := svc.CICancel(context.Background(), "test", "my-job", "99999")
+	if err == nil {
+		t.Error("expected error cancelling unowned run")
+	}
+}
+
+func TestGetVerdict_FailureClassification(t *testing.T) {
+	stub := stubAdapter()
+	stub.Run = &domain.CIRun{
+		ID:     "run-1",
+		Status: domain.RunStatusFailure,
+		Result: domain.RunResultFailure,
+	}
+	stub.Log = "error: connection timed out after 30s connecting to API server"
+	svc := app.NewService(stub)
+
+	verdict, err := svc.GetVerdict(context.Background(), "test", "my-job")
+	if err != nil {
+		t.Fatalf("GetVerdict: %v", err)
+	}
+	if verdict.Failure == nil {
+		t.Fatal("expected failure context")
+	}
+	if verdict.Failure.Classification != domain.FailureNetwork {
+		t.Errorf("classification = %q, want network_timeout", verdict.Failure.Classification)
+	}
+	if !verdict.Failure.CanRetry {
+		t.Error("network timeout should be retryable")
+	}
+}
+
+func TestBackendInfo_ReturnsActualType(t *testing.T) {
+	stub := driventest.NewStubCIAdapter("jenkins-auto")
+	svc := app.NewService(stub)
+
+	info := svc.BackendInfo()
+	if len(info) != 1 {
+		t.Fatalf("got %d backends, want 1", len(info))
+	}
+	if info[0].Type != "stub" {
+		t.Errorf("type = %q, want stub (StubCIAdapter.Type())", info[0].Type)
+	}
+}

@@ -40,12 +40,15 @@ Actions:
   ci_owned          — List builds triggered by this Conty session
   ci_artifacts      — List artifacts for a build
   ci_artifact_get   — Download a specific artifact by path
+  ci_cancel         — Abort an owned build (only builds started by this session)
   backend_info      — List backends with type details`
 
 type ContyService interface {
 	driver.PipelineService
 	driver.CIMonitorService
 }
+
+// Compile-time check that app.Service satisfies ContyService via the driver ports.
 
 func Serve(svc ContyService) error {
 	srv := mcpserver.NewServer(serverName, Version).
@@ -83,7 +86,7 @@ func RegisterTools(srv *mcpserver.Server, svc ContyService) {
 var contySchema = json.RawMessage(`{
 	"type": "object",
 	"properties": {
-		"action":  {"type": "string", "enum": ["pipeline_trigger","pipeline_status","step_log","pipelines","backends","ci_check","ci_verdict","ci_redeploy","ci_trigger","ci_params","ci_history","ci_log","ci_poll","ci_watch","ci_owned","ci_artifacts","ci_artifact_get","backend_info"], "description": "Action to perform"},
+		"action":  {"type": "string", "enum": ["pipeline_trigger","pipeline_status","step_log","pipelines","backends","ci_check","ci_verdict","ci_redeploy","ci_trigger","ci_params","ci_history","ci_log","ci_poll","ci_watch","ci_owned","ci_artifacts","ci_artifact_get","ci_cancel","backend_info"], "description": "Action to perform"},
 		"name":    {"type": "string", "description": "Pipeline name (pipeline_trigger, pipeline_status, step_log)"},
 		"step":    {"type": "integer", "description": "Step index for step_log (0-based)"},
 		"backend": {"type": "string", "description": "Backend name (ci_check, ci_verdict, ci_redeploy)"},
@@ -328,6 +331,21 @@ func contyHandler(svc ContyService) server.Handler {
 				return tool.Result{}, err
 			}
 			return tool.TextResult(string(data)), nil
+
+		case "ci_cancel":
+			if args.Backend == "" {
+				return tool.Result{}, errBackendRequired
+			}
+			if args.JobRef == "" {
+				return tool.Result{}, errJobRefRequired
+			}
+			if args.RunID == "" {
+				return tool.Result{}, fmt.Errorf("run_id parameter is required")
+			}
+			if err := svc.CICancel(ctx, args.Backend, args.JobRef, args.RunID); err != nil {
+				return tool.Result{}, err
+			}
+			return server.JSONResult(map[string]string{"status": "cancelled", "run_id": args.RunID})
 
 		case "backend_info":
 			return server.JSONResult(map[string]any{"backends": svc.BackendInfo()})

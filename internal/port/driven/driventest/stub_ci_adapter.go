@@ -79,6 +79,7 @@ func NewStubCIAdapter(name string) *StubCIAdapter {
 }
 
 func (s *StubCIAdapter) Name() string { return s.NameVal }
+func (s *StubCIAdapter) Type() string  { return "stub" }
 
 func (s *StubCIAdapter) TriggerRun(_ context.Context, jobName string, params map[string]string) (string, error) {
 	s.mu.Lock()
@@ -169,6 +170,8 @@ func (s *StubCIAdapter) ListArtifacts(_ context.Context, jobName, runID string) 
 	}
 	return s.Artifacts, nil
 }
+
+func (s *StubCIAdapter) CancelRun(_ context.Context, _, _ string) error { return s.Err }
 
 func (s *StubCIAdapter) GetArtifact(_ context.Context, jobName, runID, path string) ([]byte, error) {
 	s.mu.Lock()

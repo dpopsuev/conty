@@ -59,6 +59,7 @@ func New(name, token, owner, repo string) (*Adapter, error) {
 }
 
 func (a *Adapter) Name() string { return a.name }
+func (a *Adapter) Type() string { return BackendName }
 
 func (a *Adapter) TriggerRun(ctx context.Context, jobName string, params map[string]string) (string, error) {
 	if a.token == "" {
@@ -418,3 +419,6 @@ func mapGHResult(conclusion string) domain.RunResult {
 		return ""
 	}
 }
+
+
+func (a *Adapter) CancelRun(_ context.Context, _, _ string) error { return nil }

@@ -69,6 +69,7 @@ func New(inner driven.CIAdapter, opts ...Option) *Adapter {
 }
 
 func (a *Adapter) Name() string { return a.inner.Name() }
+func (a *Adapter) Type() string { return a.inner.Type() }
 
 func (a *Adapter) TriggerRun(ctx context.Context, jobName string, params map[string]string) (string, error) {
 	a.invalidatePrefix(fmt.Sprintf("poll:%s:", jobName))
@@ -178,6 +179,11 @@ func (a *Adapter) ListArtifacts(ctx context.Context, jobName string, runID strin
 	}
 	a.put(key, artifacts, a.artifactTTL)
 	return artifacts, nil
+}
+
+func (a *Adapter) CancelRun(ctx context.Context, jobName string, runID string) error {
+	a.invalidatePrefix(fmt.Sprintf("poll:%s:%s", jobName, runID))
+	return a.inner.CancelRun(ctx, jobName, runID)
 }
 
 func (a *Adapter) GetArtifact(ctx context.Context, jobName string, runID string, path string) ([]byte, error) {
