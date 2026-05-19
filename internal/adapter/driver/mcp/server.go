@@ -113,6 +113,7 @@ var contySchema = json.RawMessage(`{
 		"queue_id": {"type": "string", "description": "Queue item ID from ci_trigger/ci_redeploy (ci_poll)"},
 		"limit":   {"type": "integer", "description": "Max results (ci_history/ci_search, default 10/20)"},
 		"result":  {"type": "string", "description": "Filter by result: SUCCESS, FAILURE, ABORTED (ci_search)"},
+		"runner":  {"type": "string", "description": "Filter by user who triggered the build — userId or userName (ci_search)"},
 		"since":   {"type": "string", "description": "RFC 3339 lower bound on build start time (ci_search)"},
 		"path":    {"type": "string", "description": "Artifact path (ci_artifact_get)"}
 	},
@@ -138,6 +139,7 @@ type contyArgs struct {
 	Limit   int               `json:"limit"`
 	Path    string            `json:"path"`
 	Result  string            `json:"result"`
+	Runner  string            `json:"runner"`
 	Since   string            `json:"since"`
 }
 
@@ -280,6 +282,7 @@ func contyHandler(svc ContyService) server.Handler {
 			f := domain.BuildFilter{
 				Result: args.Result,
 				Params: args.Params,
+				Runner: args.Runner,
 				Limit:  args.Limit,
 			}
 			if args.Since != "" {

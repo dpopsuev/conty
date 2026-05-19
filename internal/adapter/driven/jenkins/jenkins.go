@@ -513,6 +513,10 @@ type buildWithParams struct {
 			Name  string `json:"name"`
 			Value any    `json:"value"`
 		} `json:"parameters"`
+		Causes []struct {
+			UserID   string `json:"userId"`
+			UserName string `json:"userName"`
+		} `json:"causes"`
 	} `json:"actions"`
 }
 
@@ -535,7 +539,7 @@ func (a *Adapter) SearchBuilds(ctx context.Context, jobName string, f domain.Bui
 	}
 
 	treeParam := fmt.Sprintf(
-		"builds[number,result,fullDisplayName,timestamp,duration,url,building,actions[parameters[name,value]]]{0,%d}",
+		"builds[number,result,fullDisplayName,timestamp,duration,url,building,actions[parameters[name,value],causes[userId,userName]]]{0,%d}",
 		fetch,
 	)
 	apiURL := strings.TrimRight(a.baseURL, "/") + jobPath + "/api/json?tree=" + treeParam
@@ -583,6 +587,21 @@ func (a *Adapter) SearchBuilds(ctx context.Context, jobName string, f domain.Bui
 		// Since filter
 		if !f.Since.IsZero() && time.UnixMilli(b.Timestamp).Before(f.Since) {
 			continue
+		}
+
+		// Runner filter — match userId or userName from causes
+		if f.Runner != "" {
+			matched := false
+			for _, action := range b.Actions {
+				for _, cause := range action.Causes {
+					if strings.EqualFold(cause.UserID, f.Runner) || strings.EqualFold(cause.UserName, f.Runner) {
+						matched = true
+					}
+				}
+			}
+			if !matched {
+				continue
+			}
 		}
 
 		// Params filter — collect all params from all actions

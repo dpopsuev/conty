@@ -7,6 +7,7 @@ import "time"
 type BuildFilter struct {
 	Result string            // e.g. "SUCCESS", "FAILURE", "ABORTED"
 	Params map[string]string // all specified params must match
+	Runner string            // user who triggered the build (userId from causes)
 	Since  time.Time         // only builds started at or after this time
 	Limit  int               // max results to return (default 20)
 }
