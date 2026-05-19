@@ -506,8 +506,14 @@ type buildWithParams struct {
 	FullDisplayName string `json:"fullDisplayName"`
 	Timestamp       int64  `json:"timestamp"`
 	Duration        int64  `json:"duration"`
+	EstimatedDuration int64 `json:"estimatedDuration"`
+	Description     string `json:"description"`
 	URL             string `json:"url"`
 	Building        bool   `json:"building"`
+	Culprits        []struct {
+		ID       string `json:"id"`
+		FullName string `json:"fullName"`
+	} `json:"culprits"`
 	Actions         []struct {
 		Parameters []struct {
 			Name  string `json:"name"`
@@ -538,8 +544,20 @@ func (a *Adapter) SearchBuilds(ctx context.Context, jobName string, f domain.Bui
 		jobPath += "/job/" + p
 	}
 
+	// Canonical Jenkins WorkflowRun fields available via tree parameter:
+	// Top-level: number, result, fullDisplayName, displayName, id, timestamp, duration,
+	//            estimatedDuration, url, building, keepLog, description, queueId, builtOn
+	// actions[]: ParametersAction  -> parameters[name,value]
+	//            CauseAction       -> causes[userId,userName,shortDescription]
+	//            BadgeAction       -> text  (hub/DU/profile badges)
+	//            BuildData         -> remoteUrls, lastBuiltRevision[SHA1]
+	//            TimeInQueueAction -> queuingDurationMillis, buildingDurationMillis
+	// culprits[]: absoluteUrl, id, fullName  (commit authors in the build)
+	// changeSets[]: items[authorEmail, comment, commitId, timestamp, paths]
 	treeParam := fmt.Sprintf(
-		"builds[number,result,fullDisplayName,timestamp,duration,url,building,actions[parameters[name,value],causes[userId,userName]]]{0,%d}",
+		"builds[number,result,fullDisplayName,timestamp,duration,estimatedDuration,url,building,description,"+
+			"culprits[id,fullName],"+
+			"actions[parameters[name,value],causes[userId,userName,shortDescription],text]]{0,%d}",
 		fetch,
 	)
 	apiURL := strings.TrimRight(a.baseURL, "/") + jobPath + "/api/json?tree=" + treeParam
