@@ -328,6 +328,14 @@ func (s *Service) CIHistory(ctx context.Context, backend, jobRef string, limit i
 	return a.ListBuilds(ctx, jobRef, limit)
 }
 
+func (s *Service) CISearch(ctx context.Context, backend, jobRef string, f domain.BuildFilter) ([]domain.CIRun, error) {
+	a, err := s.adapter(backend)
+	if err != nil {
+		return nil, err
+	}
+	return a.SearchBuilds(ctx, jobRef, f)
+}
+
 func (s *Service) CILog(ctx context.Context, backend, jobRef, runID string) (string, error) {
 	a, err := s.adapter(backend)
 	if err != nil {

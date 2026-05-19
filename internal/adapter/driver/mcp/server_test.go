@@ -3,6 +3,9 @@ package mcp_test
 import (
 	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 
 	contymcp "github.com/dpopsuev/conty/internal/adapter/driver/mcp"
@@ -101,5 +104,94 @@ func TestAllListActions_ReturnJSONObjects(t *testing.T) {
 				t.Errorf("action %s response is not a JSON object: %v\nraw: %s", tt.name, err, text)
 			}
 		})
+	}
+}
+
+// TestServeHTTP_StatelessSurvivesRestart verifies that the HTTP server can be
+// called without a prior session — simulating what happens when the server
+// restarts and the client's cached Mcp-Session-Id is stale or absent.
+// With Stateless: true each request is self-contained so this must succeed.
+func TestServeHTTP_StatelessSurvivesRestart(t *testing.T) {
+	stub := driventest.NewStubCIAdapter("test")
+	stub.Run = &domain.CIRun{ID: "run-1", Status: domain.RunStatusSuccess, Result: domain.RunResultSuccess}
+
+	svc := app.NewService(stub)
+
+	ts := httptest.NewServer(contymcp.NewHTTPHandler(svc))
+	t.Cleanup(ts.Close)
+
+	client := sdkmcp.NewClient(&sdkmcp.Implementation{Name: "test", Version: "0"}, nil)
+
+	// First connection — normal
+	conn1, err := client.Connect(context.Background(), &sdkmcp.StreamableClientTransport{Endpoint: ts.URL}, nil)
+	if err != nil {
+		t.Fatalf("first connect: %v", err)
+	}
+	result1, err := conn1.CallTool(context.Background(), &sdkmcp.CallToolParams{
+		Name:      "conty",
+		Arguments: map[string]any{"action": "backends"},
+	})
+	if err != nil {
+		t.Fatalf("first call: %v", err)
+	}
+	_ = conn1.Close()
+
+	// Simulate restart: new server on same address, old session ID is gone.
+	// Client connects fresh — must work without any session handshake state.
+	conn2, err := client.Connect(context.Background(), &sdkmcp.StreamableClientTransport{Endpoint: ts.URL}, nil)
+	if err != nil {
+		t.Fatalf("second connect (post-restart): %v", err)
+	}
+	t.Cleanup(func() { _ = conn2.Close() })
+
+	result2, err := conn2.CallTool(context.Background(), &sdkmcp.CallToolParams{
+		Name:      "conty",
+		Arguments: map[string]any{"action": "backends"},
+	})
+	if err != nil {
+		t.Fatalf("second call (post-restart): %v", err)
+	}
+
+	// Both results must be valid JSON with a backends key
+	for i, result := range []*sdkmcp.CallToolResult{result1, result2} {
+		if len(result.Content) == 0 {
+			t.Fatalf("call %d: empty content", i+1)
+		}
+		text := result.Content[0].(*sdkmcp.TextContent).Text
+		var obj map[string]any
+		if err := json.Unmarshal([]byte(text), &obj); err != nil {
+			t.Fatalf("call %d: invalid JSON: %v", i+1, err)
+		}
+		if _, ok := obj["backends"]; !ok {
+			t.Errorf("call %d: missing 'backends' key in response: %s", i+1, text)
+		}
+	}
+}
+
+// TestServeHTTP_StaleSessionIDIgnored verifies that sending a stale
+// Mcp-Session-Id header does not return 404 session-not-found.
+func TestServeHTTP_StaleSessionIDIgnored(t *testing.T) {
+	stub := driventest.NewStubCIAdapter("test")
+	stub.Run = &domain.CIRun{ID: "run-1", Status: domain.RunStatusSuccess}
+	svc := app.NewService(stub)
+
+	ts := httptest.NewServer(contymcp.NewHTTPHandler(svc))
+	t.Cleanup(ts.Close)
+
+	// POST with a bogus session ID — stateless server must not 404.
+	body := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"0"}}}`
+	req, _ := http.NewRequest(http.MethodPost, ts.URL, strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Mcp-Session-Id", "stale-session-id-that-does-not-exist")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		t.Errorf("got 404 session-not-found with stale session ID — stateless mode broken")
 	}
 }

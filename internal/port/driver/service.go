@@ -22,6 +22,7 @@ type CIMonitorService interface {
 	CITrigger(ctx context.Context, backend, jobRef string, params map[string]string) (*domain.TriggerResult, error)
 	CIParams(ctx context.Context, backend, jobRef, runID string) (map[string]string, error)
 	CIHistory(ctx context.Context, backend, jobRef string, limit int) ([]domain.CIRun, error)
+	CISearch(ctx context.Context, backend, jobRef string, f domain.BuildFilter) ([]domain.CIRun, error)
 	CILog(ctx context.Context, backend, jobRef, runID string) (string, error)
 	CIPoll(ctx context.Context, backend, queueID string) (string, error)
 	CIWatch(ctx context.Context, backend, jobRef, runID string) (*domain.WatchStatus, error)

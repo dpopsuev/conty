@@ -2,6 +2,15 @@ package domain
 
 import "time"
 
+// BuildFilter selects past builds to return from SearchBuilds.
+// All non-zero fields are ANDed together.
+type BuildFilter struct {
+	Result string            // e.g. "SUCCESS", "FAILURE", "ABORTED"
+	Params map[string]string // all specified params must match
+	Since  time.Time         // only builds started at or after this time
+	Limit  int               // max results to return (default 20)
+}
+
 type CIRun struct {
 	ID        string    `json:"id"`
 	Name      string    `json:"name"`

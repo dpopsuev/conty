@@ -499,3 +499,137 @@ func mapPipelineStatus(status string) domain.RunStatus {
 		return domain.RunStatusPending
 	}
 }
+
+type buildWithParams struct {
+	Number          int64  `json:"number"`
+	Result          string `json:"result"`
+	FullDisplayName string `json:"fullDisplayName"`
+	Timestamp       int64  `json:"timestamp"`
+	Duration        int64  `json:"duration"`
+	URL             string `json:"url"`
+	Building        bool   `json:"building"`
+	Actions         []struct {
+		Parameters []struct {
+			Name  string `json:"name"`
+			Value any    `json:"value"`
+		} `json:"parameters"`
+	} `json:"actions"`
+}
+
+func (a *Adapter) SearchBuilds(ctx context.Context, jobName string, f domain.BuildFilter) ([]domain.CIRun, error) {
+	start := time.Now()
+	limit := f.Limit
+	if limit <= 0 {
+		limit = 20
+	}
+	// Fetch 3x limit as a buffer since we filter client-side.
+	fetch := limit * 3
+	if fetch < 50 {
+		fetch = 50
+	}
+
+	parts := strings.Split(jobName, "/")
+	var jobPath string
+	for _, p := range parts {
+		jobPath += "/job/" + p
+	}
+
+	treeParam := fmt.Sprintf(
+		"builds[number,result,fullDisplayName,timestamp,duration,url,building,actions[parameters[name,value]]]{0,%d}",
+		fetch,
+	)
+	apiURL := strings.TrimRight(a.baseURL, "/") + jobPath + "/api/json?tree=" + treeParam
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.SetBasicAuth(a.user, a.token)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		adapterdriven.LogError(ctx, a.name, "search_builds", err)
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("%w: %s (HTTP %d)", ErrJobNotFound, jobName, resp.StatusCode)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("search_builds read: %w", err)
+	}
+
+	var payload struct {
+		Builds []buildWithParams `json:"builds"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return nil, fmt.Errorf("search_builds decode: %w", err)
+	}
+
+	var runs []domain.CIRun
+	for _, b := range payload.Builds {
+		if len(runs) >= limit {
+			break
+		}
+
+		// Result filter
+		if f.Result != "" && !strings.EqualFold(b.Result, f.Result) {
+			continue
+		}
+
+		// Since filter
+		if !f.Since.IsZero() && time.UnixMilli(b.Timestamp).Before(f.Since) {
+			continue
+		}
+
+		// Params filter — collect all params from all actions
+		if len(f.Params) > 0 {
+			got := map[string]string{}
+			for _, action := range b.Actions {
+				for _, p := range action.Parameters {
+					got[p.Name] = fmt.Sprintf("%v", p.Value)
+				}
+			}
+			match := true
+			for k, v := range f.Params {
+				if got[k] != v {
+					match = false
+					break
+				}
+			}
+			if !match {
+				continue
+			}
+		}
+
+		status := domain.RunStatusSuccess
+		switch {
+		case b.Building:
+			status = domain.RunStatusRunning
+		case b.Result == "FAILURE":
+			status = domain.RunStatusFailure
+		case b.Result == "ABORTED":
+			status = domain.RunStatusAborted
+		case b.Result == "":
+			status = domain.RunStatusPending
+		}
+
+		runs = append(runs, domain.CIRun{
+			ID:        strconv.FormatInt(b.Number, 10),
+			Name:      b.FullDisplayName,
+			Status:    status,
+			Result:    domain.RunResult(b.Result),
+			URL:       b.URL,
+			StartedAt: time.UnixMilli(b.Timestamp),
+			Duration:  b.Duration,
+		})
+	}
+
+	adapterdriven.LogOpDone(ctx, a.name, "search_builds",
+		slog.Duration(adapterdriven.LogKeyElapsed, time.Since(start)),
+		slog.Int(adapterdriven.LogKeyCount, len(runs)))
+	return runs, nil
+}

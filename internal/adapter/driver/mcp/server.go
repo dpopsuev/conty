@@ -8,7 +8,10 @@ import (
 
 	"log"
 	"net/http"
+	"time"
 
+
+	"github.com/dpopsuev/conty/internal/domain"
 	"github.com/dpopsuev/conty/internal/port/driver"
 	"github.com/dpopsuev/battery/mcpserver"
 	"github.com/dpopsuev/battery/server"
@@ -57,17 +60,31 @@ func Serve(svc ContyService) error {
 	return srv.Serve(context.Background(), &sdkmcp.StdioTransport{})
 }
 
-func ServeHTTP(svc ContyService, addr string) error {
+// NewHTTPHandler returns the stateless HTTP handler for the MCP server.
+// Exported so tests can wire it into an httptest.Server without a real listener.
+func NewHTTPHandler(svc ContyService) http.Handler {
 	srv := mcpserver.NewServer(serverName, Version).
 		WithInstructions(serverInstructions)
 	RegisterTools(srv, svc)
 
 	handler := sdkmcp.NewStreamableHTTPHandler(func(_ *http.Request) *sdkmcp.Server {
 		return srv.SDK()
-	}, nil)
+	}, &sdkmcp.StreamableHTTPOptions{
+		Stateless: true,
+	})
 
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /version", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"version":%q}`, Version)
+	})
+	mux.Handle("/", handler)
+	return mux
+}
+
+func ServeHTTP(svc ContyService, addr string) error {
 	log.Printf("conty %s listening on %s", Version, addr)
-	return http.ListenAndServe(addr, handler)
+	return http.ListenAndServe(addr, NewHTTPHandler(svc))
 }
 
 func RegisterTools(srv *mcpserver.Server, svc ContyService) {
@@ -86,7 +103,7 @@ func RegisterTools(srv *mcpserver.Server, svc ContyService) {
 var contySchema = json.RawMessage(`{
 	"type": "object",
 	"properties": {
-		"action":  {"type": "string", "enum": ["pipeline_trigger","pipeline_status","step_log","pipelines","backends","ci_check","ci_verdict","ci_redeploy","ci_trigger","ci_params","ci_history","ci_log","ci_poll","ci_watch","ci_owned","ci_artifacts","ci_artifact_get","ci_cancel","backend_info"], "description": "Action to perform"},
+		"action":  {"type": "string", "enum": ["pipeline_trigger","pipeline_status","step_log","pipelines","backends","ci_check","ci_verdict","ci_redeploy","ci_trigger","ci_params","ci_history","ci_search","ci_log","ci_poll","ci_watch","ci_owned","ci_artifacts","ci_artifact_get","ci_cancel","backend_info"], "description": "Action to perform"},
 		"name":    {"type": "string", "description": "Pipeline name (pipeline_trigger, pipeline_status, step_log)"},
 		"step":    {"type": "integer", "description": "Step index for step_log (0-based)"},
 		"backend": {"type": "string", "description": "Backend name (ci_check, ci_verdict, ci_redeploy)"},
@@ -94,7 +111,9 @@ var contySchema = json.RawMessage(`{
 		"params":  {"type": "object", "description": "Build parameters as key-value pairs (ci_trigger, ci_redeploy). Example: {\"OPENSHIFT_RELEASE_IMAGE\": \"quay.io/ocp/release:4.22-nightly\"}"},
 		"run_id":  {"type": "string", "description": "Build/run number (ci_params, ci_log)"},
 		"queue_id": {"type": "string", "description": "Queue item ID from ci_trigger/ci_redeploy (ci_poll)"},
-		"limit":   {"type": "integer", "description": "Max results (ci_history, default 10)"},
+		"limit":   {"type": "integer", "description": "Max results (ci_history/ci_search, default 10/20)"},
+		"result":  {"type": "string", "description": "Filter by result: SUCCESS, FAILURE, ABORTED (ci_search)"},
+		"since":   {"type": "string", "description": "RFC 3339 lower bound on build start time (ci_search)"},
 		"path":    {"type": "string", "description": "Artifact path (ci_artifact_get)"}
 	},
 	"required": ["action"]
@@ -118,6 +137,8 @@ type contyArgs struct {
 	QueueID string            `json:"queue_id"`
 	Limit   int               `json:"limit"`
 	Path    string            `json:"path"`
+	Result  string            `json:"result"`
+	Since   string            `json:"since"`
 }
 
 func contyHandler(svc ContyService) server.Handler {
@@ -244,6 +265,31 @@ func contyHandler(svc ContyService) server.Handler {
 				return tool.Result{}, errJobRefRequired
 			}
 			builds, err := svc.CIHistory(ctx, args.Backend, args.JobRef, args.Limit)
+			if err != nil {
+				return tool.Result{}, err
+			}
+			return server.JSONResult(map[string]any{"builds": builds})
+
+		case "ci_search":
+			if args.Backend == "" {
+				return tool.Result{}, errBackendRequired
+			}
+			if args.JobRef == "" {
+				return tool.Result{}, errJobRefRequired
+			}
+			f := domain.BuildFilter{
+				Result: args.Result,
+				Params: args.Params,
+				Limit:  args.Limit,
+			}
+			if args.Since != "" {
+				t, err := time.Parse(time.RFC3339, args.Since)
+				if err != nil {
+					return tool.Result{}, fmt.Errorf("invalid since (want RFC3339): %w", err)
+				}
+				f.Since = t
+			}
+			builds, err := svc.CISearch(ctx, args.Backend, args.JobRef, f)
 			if err != nil {
 				return tool.Result{}, err
 			}

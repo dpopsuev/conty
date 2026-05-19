@@ -271,3 +271,7 @@ func (s *StubCIMonitorService) CICancel(_ context.Context, backend, jobRef, runI
 	_ = jobRef
 	return s.Err
 }
+
+func (s *StubCIMonitorService) CISearch(_ context.Context, backend, jobRef string, f domain.BuildFilter) ([]domain.CIRun, error) {
+	return s.Builds, s.Err
+}

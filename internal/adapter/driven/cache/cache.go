@@ -168,6 +168,11 @@ func (a *Adapter) ListBuilds(ctx context.Context, jobName string, limit int) ([]
 	return builds, nil
 }
 
+// SearchBuilds is not cached — results depend on dynamic filter criteria.
+func (a *Adapter) SearchBuilds(ctx context.Context, jobName string, f domain.BuildFilter) ([]domain.CIRun, error) {
+	return a.inner.SearchBuilds(ctx, jobName, f)
+}
+
 func (a *Adapter) ListArtifacts(ctx context.Context, jobName string, runID string) ([]domain.CIArtifact, error) {
 	key := fmt.Sprintf("artifacts:%s:%s", jobName, runID)
 	if v, ok := a.get(key); ok {

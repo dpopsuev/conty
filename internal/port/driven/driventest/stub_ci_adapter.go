@@ -154,6 +154,23 @@ func (s *StubCIAdapter) ListBuilds(_ context.Context, _ string, _ int) ([]domain
 	return s.Builds, nil
 }
 
+func (s *StubCIAdapter) SearchBuilds(_ context.Context, _ string, f domain.BuildFilter) ([]domain.CIRun, error) {
+	var out []domain.CIRun
+	for _, b := range s.Builds {
+		if f.Result != "" && string(b.Result) != f.Result {
+			continue
+		}
+		if !f.Since.IsZero() && b.StartedAt.Before(f.Since) {
+			continue
+		}
+		out = append(out, b)
+		if f.Limit > 0 && len(out) >= f.Limit {
+			break
+		}
+	}
+	return out, nil
+}
+
 func (s *StubCIAdapter) GetEstimatedDuration(_ context.Context, _ string) (int64, error) {
 	return s.EstimatedDuration, nil
 }

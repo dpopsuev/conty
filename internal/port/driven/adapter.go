@@ -16,6 +16,7 @@ type CIAdapter interface {
 	GetJobLog(ctx context.Context, jobName string, runID string) (string, error)
 	GetBuildParams(ctx context.Context, jobName string, runID string) (map[string]string, error)
 	ListBuilds(ctx context.Context, jobName string, limit int) ([]domain.CIRun, error)
+	SearchBuilds(ctx context.Context, jobName string, f domain.BuildFilter) ([]domain.CIRun, error)
 	ListArtifacts(ctx context.Context, jobName string, runID string) ([]domain.CIArtifact, error)
 	GetArtifact(ctx context.Context, jobName string, runID string, path string) ([]byte, error)
 	GetEstimatedDuration(ctx context.Context, jobName string) (int64, error)
