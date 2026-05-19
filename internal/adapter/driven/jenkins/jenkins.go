@@ -544,16 +544,6 @@ func (a *Adapter) SearchBuilds(ctx context.Context, jobName string, f domain.Bui
 		jobPath += "/job/" + p
 	}
 
-	// Canonical Jenkins WorkflowRun fields available via tree parameter:
-	// Top-level: number, result, fullDisplayName, displayName, id, timestamp, duration,
-	//            estimatedDuration, url, building, keepLog, description, queueId, builtOn
-	// actions[]: ParametersAction  -> parameters[name,value]
-	//            CauseAction       -> causes[userId,userName,shortDescription]
-	//            BadgeAction       -> text  (hub/DU/profile badges)
-	//            BuildData         -> remoteUrls, lastBuiltRevision[SHA1]
-	//            TimeInQueueAction -> queuingDurationMillis, buildingDurationMillis
-	// culprits[]: absoluteUrl, id, fullName  (commit authors in the build)
-	// changeSets[]: items[authorEmail, comment, commitId, timestamp, paths]
 	treeParam := fmt.Sprintf(
 		"builds[number,result,fullDisplayName,timestamp,duration,estimatedDuration,url,building,description,"+
 			"culprits[id,fullName],"+
