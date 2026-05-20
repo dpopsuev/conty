@@ -271,8 +271,29 @@ func (s *Service) CheckLatest(ctx context.Context, backend, jobRef string) (*dom
 	}, nil
 }
 
-func (s *Service) GetVerdict(ctx context.Context, backend, jobRef string, f domain.LogFilter) (*domain.CIVerdict, error) {
-	check, err := s.CheckLatest(ctx, backend, jobRef)
+func (s *Service) GetVerdict(ctx context.Context, backend, jobRef, runID string, f domain.LogFilter) (*domain.CIVerdict, error) {
+	var check *domain.CICheck
+	var err error
+	if runID == "" {
+		check, err = s.CheckLatest(ctx, backend, jobRef)
+	} else {
+		a, aerr := s.adapter(backend)
+		if aerr != nil {
+			return nil, aerr
+		}
+		run, rerr := a.PollRun(ctx, jobRef, runID)
+		if rerr != nil {
+			return nil, rerr
+		}
+		check = &domain.CICheck{
+			JobRef:    jobRef,
+			Backend:   backend,
+			RunID:     run.ID,
+			Status:    run.Status,
+			CheckedAt: time.Now(),
+		}
+		err = nil
+	}
 	if err != nil {
 		return nil, err
 	}

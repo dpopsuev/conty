@@ -16,7 +16,7 @@ type PipelineService interface {
 
 type CIMonitorService interface {
 	CheckLatest(ctx context.Context, backend, jobRef string) (*domain.CICheck, error)
-	GetVerdict(ctx context.Context, backend, jobRef string, f domain.LogFilter) (*domain.CIVerdict, error)
+	GetVerdict(ctx context.Context, backend, jobRef, runID string, f domain.LogFilter) (*domain.CIVerdict, error)
 	TriggerRedeploy(ctx context.Context, backend, jobRef string) (string, error)
 	TriggerRedeployWithParams(ctx context.Context, backend, jobRef string, params map[string]string) (string, error)
 	CITrigger(ctx context.Context, backend, jobRef string, params map[string]string) (*domain.TriggerResult, error)

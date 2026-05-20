@@ -174,7 +174,7 @@ func (s *StubCIMonitorService) CheckLatest(_ context.Context, backend, jobRef st
 	return s.Check, s.Err
 }
 
-func (s *StubCIMonitorService) GetVerdict(_ context.Context, backend, jobRef string, _ domain.LogFilter) (*domain.CIVerdict, error) {
+func (s *StubCIMonitorService) GetVerdict(_ context.Context, backend, jobRef, _ string, _ domain.LogFilter) (*domain.CIVerdict, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.VerdictCalls = append(s.VerdictCalls, GetVerdictCall{Backend: backend, JobRef: jobRef})

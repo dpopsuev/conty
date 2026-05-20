@@ -152,7 +152,7 @@ func buildServer(svc ContyService) *mcpserver.Server {
 				if args.JobRef == "" {
 					return tool.Result{}, errJobRefRequired
 				}
-				verdict, err := svc.GetVerdict(ctx, args.Backend, args.JobRef, domain.LogFilter{Tail: args.Tail, Grep: args.Grep})
+				verdict, err := svc.GetVerdict(ctx, args.Backend, args.JobRef, args.RunID, domain.LogFilter{Tail: args.Tail, Grep: args.Grep})
 				if err != nil {
 					return tool.Result{}, err
 				}
