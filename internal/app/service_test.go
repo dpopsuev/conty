@@ -3,6 +3,8 @@ package app_test
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/dpopsuev/conty/internal/app"
@@ -263,11 +265,11 @@ func TestCILog_ReturnsBuildLog(t *testing.T) {
 	stub.Log = "ERROR: rhcos.json returned 404"
 	svc := app.NewService(stub)
 
-	log, err := svc.CILog(context.Background(), "test", "ocp-baremetal-ipi-deployment", "40232")
+	res, err := svc.CILog(context.Background(), "test", "ocp-baremetal-ipi-deployment", "40232", domain.LogFilter{})
 	if err != nil {
 		t.Fatalf("CILog: %v", err)
 	}
-	if log == "" {
+	if len(res.Lines) == 0 {
 		t.Error("expected log output")
 	}
 }
@@ -526,5 +528,47 @@ func TestBackendInfo_ReturnsActualType(t *testing.T) {
 	}
 	if info[0].Type != "stub" {
 		t.Errorf("type = %q, want stub (StubCIAdapter.Type())", info[0].Type)
+	}
+}
+
+func TestCILog_TailTruncation(t *testing.T) {
+	lines := make([]string, 500)
+	for i := range lines {
+		lines[i] = fmt.Sprintf("line %d", i)
+	}
+	stub := stubAdapter()
+	stub.Log = strings.Join(lines, "\n")
+	svc := app.NewService(stub)
+
+	res, err := svc.CILog(context.Background(), "test", "job", "1", domain.LogFilter{Tail: 100})
+	if err != nil {
+		t.Fatalf("CILog: %v", err)
+	}
+	if len(res.Lines) != 100 {
+		t.Errorf("lines = %d, want 100", len(res.Lines))
+	}
+	if res.Skipped != 400 {
+		t.Errorf("skipped = %d, want 400", res.Skipped)
+	}
+	if !res.Truncated {
+		t.Error("expected Truncated=true")
+	}
+}
+
+func TestCILog_GrepFilter(t *testing.T) {
+	raw := "INFO: starting\nERROR: something broke\nINFO: done"
+	stub := stubAdapter()
+	stub.Log = raw
+	svc := app.NewService(stub)
+
+	res, err := svc.CILog(context.Background(), "test", "job", "1", domain.LogFilter{Grep: "error", Tail: -1})
+	if err != nil {
+		t.Fatalf("CILog: %v", err)
+	}
+	if len(res.Lines) != 1 || res.Lines[0] != "ERROR: something broke" {
+		t.Errorf("unexpected lines: %v", res.Lines)
+	}
+	if !res.Filtered {
+		t.Error("expected Filtered=true")
 	}
 }

@@ -105,6 +105,7 @@ type CILogCall struct {
 	Backend string
 	JobRef  string
 	RunID   string
+	Filter  domain.LogFilter
 }
 
 type CIPollCall struct {
@@ -143,7 +144,7 @@ type StubCIMonitorService struct {
 	TriggerResult *domain.TriggerResult
 	Params        map[string]string
 	Builds        []domain.CIRun
-	Log           string
+	Log           domain.LogResult
 	WatchStatus   *domain.WatchStatus
 	Artifacts     []domain.CIArtifact
 	Artifact      []byte
@@ -215,10 +216,10 @@ func (s *StubCIMonitorService) CIHistory(_ context.Context, backend, jobRef stri
 	return s.Builds, s.Err
 }
 
-func (s *StubCIMonitorService) CILog(_ context.Context, backend, jobRef, runID string) (string, error) {
+func (s *StubCIMonitorService) CILog(_ context.Context, backend, jobRef, runID string, f domain.LogFilter) (domain.LogResult, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.CILogCalls = append(s.CILogCalls, CILogCall{Backend: backend, JobRef: jobRef, RunID: runID})
+	s.CILogCalls = append(s.CILogCalls, CILogCall{Backend: backend, JobRef: jobRef, RunID: runID, Filter: f})
 	return s.Log, s.Err
 }
 

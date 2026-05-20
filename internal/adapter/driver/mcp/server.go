@@ -115,7 +115,9 @@ var contySchema = json.RawMessage(`{
 		"result":  {"type": "string", "description": "Filter by result: SUCCESS, FAILURE, ABORTED (ci_search)"},
 		"runner":  {"type": "string", "description": "Filter by user who triggered the build — userId or userName (ci_search)"},
 		"since":   {"type": "string", "description": "RFC 3339 lower bound on build start time (ci_search)"},
-		"path":    {"type": "string", "description": "Artifact path (ci_artifact_get)"}
+		"path":    {"type": "string", "description": "Artifact path (ci_artifact_get)"},
+		"tail":    {"type": "integer", "description": "ci_log: lines to return from the end of the log (default 200, -1 = all)"},
+		"grep":    {"type": "string", "description": "ci_log: return only lines containing this substring (case-insensitive)"}
 	},
 	"required": ["action"]
 }`)
@@ -141,6 +143,8 @@ type contyArgs struct {
 	Result  string            `json:"result"`
 	Runner  string            `json:"runner"`
 	Since   string            `json:"since"`
+	Tail    int               `json:"tail"`
+	Grep    string            `json:"grep"`
 }
 
 func contyHandler(svc ContyService) server.Handler {
@@ -308,11 +312,14 @@ func contyHandler(svc ContyService) server.Handler {
 			if args.RunID == "" {
 				return tool.Result{}, fmt.Errorf("run_id parameter is required")
 			}
-			log, err := svc.CILog(ctx, args.Backend, args.JobRef, args.RunID)
+			result, err := svc.CILog(ctx, args.Backend, args.JobRef, args.RunID, domain.LogFilter{
+				Tail: args.Tail,
+				Grep: args.Grep,
+			})
 			if err != nil {
 				return tool.Result{}, err
 			}
-			return tool.TextResult(log), nil
+			return server.JSONResult(result)
 
 		case "ci_poll":
 			if args.Backend == "" {

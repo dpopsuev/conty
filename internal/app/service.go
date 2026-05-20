@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -336,12 +337,68 @@ func (s *Service) CISearch(ctx context.Context, backend, jobRef string, f domain
 	return a.SearchBuilds(ctx, jobRef, f)
 }
 
-func (s *Service) CILog(ctx context.Context, backend, jobRef, runID string) (string, error) {
+func (s *Service) CILog(ctx context.Context, backend, jobRef, runID string, f domain.LogFilter) (domain.LogResult, error) {
 	a, err := s.adapter(backend)
 	if err != nil {
-		return "", err
+		return domain.LogResult{}, err
 	}
-	return a.GetJobLog(ctx, jobRef, runID)
+	raw, err := a.GetJobLog(ctx, jobRef, runID)
+	if err != nil {
+		return domain.LogResult{}, err
+	}
+	return applyLogFilter(raw, f), nil
+}
+
+func applyLogFilter(raw string, f domain.LogFilter) domain.LogResult {
+	lines := strings.Split(raw, "\n")
+
+	if f.Grep != "" {
+		pattern := strings.ToLower(f.Grep)
+		matched := lines[:0]
+		for _, l := range lines {
+			if strings.Contains(strings.ToLower(l), pattern) {
+				matched = append(matched, l)
+			}
+		}
+		lines = matched
+	}
+
+	totalLines := len(lines)
+
+	tail := f.Tail
+	if tail == 0 {
+		tail = domain.LogDefaultTail
+	}
+
+	skipped := 0
+	truncated := false
+	if tail > 0 && len(lines) > tail {
+		skipped = len(lines) - tail
+		lines = lines[skipped:]
+		truncated = true
+	}
+
+	// Byte cap: if the tail still exceeds LogDefaultMaxBytes, trim from the front.
+	byteTotal := 0
+	for _, l := range lines {
+		byteTotal += len(l) + 1
+	}
+	if byteTotal > domain.LogDefaultMaxBytes {
+		for byteTotal > domain.LogDefaultMaxBytes && len(lines) > 0 {
+			byteTotal -= len(lines[0]) + 1
+			skipped++
+			lines = lines[1:]
+		}
+		truncated = true
+	}
+
+	return domain.LogResult{
+		Lines:      lines,
+		TotalLines: totalLines,
+		Skipped:    skipped,
+		Filtered:   f.Grep != "",
+		Truncated:  truncated,
+	}
 }
 
 func (s *Service) CIPoll(ctx context.Context, backend, queueID string) (string, error) {

@@ -12,6 +12,32 @@ type BuildFilter struct {
 	Limit  int               // max results to return (default 20)
 }
 
+const (
+	// LogDefaultTail is the default number of tail lines returned from a build log.
+	// Jenkins logs grow large; failures always appear at the end.
+	LogDefaultTail = 200
+	// LogDefaultMaxBytes caps the returned log regardless of line count.
+	LogDefaultMaxBytes = 50 * 1024
+)
+
+// LogFilter controls how much of a build log is returned.
+type LogFilter struct {
+	// Tail is the max lines to return from the end; 0 means use LogDefaultTail.
+	// Set to -1 to return all lines (no truncation).
+	Tail int
+	// Grep filters to lines containing this substring (case-insensitive) before tail is applied.
+	Grep string
+}
+
+// LogResult is the return value of CILog.
+type LogResult struct {
+	Lines      []string `json:"lines"`
+	TotalLines int      `json:"total_lines"`
+	Skipped    int      `json:"skipped,omitempty"`
+	Filtered   bool     `json:"filtered,omitempty"` // true if grep was applied
+	Truncated  bool     `json:"truncated,omitempty"`
+}
+
 type CIRun struct {
 	ID        string    `json:"id"`
 	Name      string    `json:"name"`
