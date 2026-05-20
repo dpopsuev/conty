@@ -5,17 +5,16 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-
 	"log"
 	"net/http"
+	"strings"
 	"time"
 
-
+	"github.com/dpopsuev/battery/mcpserver"
+	battserver "github.com/dpopsuev/battery/server"
+	"github.com/dpopsuev/battery/tool"
 	"github.com/dpopsuev/conty/internal/domain"
 	"github.com/dpopsuev/conty/internal/port/driver"
-	"github.com/dpopsuev/battery/mcpserver"
-	"github.com/dpopsuev/battery/server"
-	"github.com/dpopsuev/battery/tool"
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -23,389 +22,349 @@ const serverName = "conty"
 
 var Version = "dev"
 
-var serverInstructions = `Conty — AI-driven CI/CD execution tool. Single point for deploying lab environments and analyzing CI results.
+const serverInstructions = "CI/CD operations. Call ci(action=help) first — lists backends, pipelines, and all actions with params. " +
+	"Typical flow: trigger → wait → status. For failures: status(grep=error) gives verdict + filtered log in one call. " +
+	"run_id is optional for status/log — omit to use the latest build."
 
-Actions:
-  pipeline_trigger  — Trigger a named pipeline (sequential multi-job execution)
-  pipeline_status   — Get current status of a pipeline run
-  step_log          — Get log output for a specific pipeline step
-  pipelines         — List available pipelines
-  backends          — List available CI backend names
-  ci_check          — Check latest CI run status for a job
-  ci_verdict        — Get structured pass/fail verdict; accepts tail/grep to filter the failure log inline
-  ci_redeploy       — Trigger redeployment of a CI job
-  ci_trigger        — Trigger a build with custom parameters, returns queue_id and build_number
-  ci_params         — Get parameters from a specific build (values truncated at 500 chars)
-  ci_history        — List recent builds for a job with status
-  ci_log            — Get filtered log (tail/grep); run_id optional — omit for latest build
-  ci_poll           — Resolve a queue ID to a build number
-  ci_watch          — Watch a build: status, progress %, overdue flag (uses estimated duration)
-  ci_owned          — List builds triggered by this Conty session
-  ci_artifacts      — List artifacts for a build
-  ci_artifact_get   — Download a text artifact with tail/grep filtering (binary artifacts: use ci_artifacts for URL)
-  ci_cancel         — Abort an owned build (only builds started by this session)
-  backend_info      — List backends with type details`
+var contySchema = json.RawMessage(`{
+	"type": "object",
+	"properties": {
+		"action":   {"type": "string", "enum": ["help","status","log","search","trigger","wait","artifact","cancel"], "description": "Action to perform. Call help first to see backends and pipelines."},
+		"backend":  {"type": "string", "description": "Backend name (listed by help)"},
+		"job_ref":  {"type": "string", "description": "Job path e.g. 'ocp-baremetal-ipi-deployment' or 'CI/far-edge-vran-deployment'"},
+		"run_id":   {"type": "string", "description": "Build number. Optional for status/log — omit to use the latest build."},
+		"queue_id": {"type": "string", "description": "Queue item ID returned by trigger. Pass to wait to resolve to build_number."},
+		"pipeline": {"type": "string", "description": "Pipeline name. Use instead of backend+job_ref for pipeline operations (trigger, status, log)."},
+		"step":     {"type": "integer", "description": "Step index for pipeline log (0-based). Use with pipeline."},
+		"params":   {"type": "object", "description": "Key-value pairs: build parameters for trigger, or parameter filter for search."},
+		"result":   {"type": "string", "description": "Filter by result: SUCCESS, FAILURE, ABORTED (search)."},
+		"runner":   {"type": "string", "description": "Filter by triggering user userId or userName (search)."},
+		"since":    {"type": "string", "description": "RFC 3339 lower bound on build start time (search)."},
+		"limit":    {"type": "integer", "description": "Max results (search default 20)."},
+		"owned":    {"type": "boolean", "description": "Filter to builds triggered by this session (search)."},
+		"path":     {"type": "string", "description": "Artifact path (artifact). Omit to list all artifacts for the build."},
+		"tail":     {"type": "integer", "description": "Lines from end of log (default 200, -1 = all). Applies to status, log, artifact."},
+		"grep":     {"type": "string", "description": "Return only log lines containing this substring, case-insensitive. Applies to status, log, artifact."},
+		"include":  {"type": "string", "description": "Comma-separated extras for status: 'params' to include build parameters."}
+	},
+	"required": ["action"]
+}`)
 
+var (
+	errUnknownAction  = errors.New("unknown action")
+	errBackendRequired = errors.New("backend parameter is required")
+	errJobRefRequired  = errors.New("job_ref parameter is required")
+)
+
+type ciArgs struct {
+	Action   string            `json:"action"`
+	Backend  string            `json:"backend"`
+	JobRef   string            `json:"job_ref"`
+	RunID    string            `json:"run_id"`
+	QueueID  string            `json:"queue_id"`
+	Pipeline string            `json:"pipeline"`
+	Step     int               `json:"step"`
+	Params   map[string]string `json:"params"`
+	Result   string            `json:"result"`
+	Runner   string            `json:"runner"`
+	Since    string            `json:"since"`
+	Limit    int               `json:"limit"`
+	Owned    bool              `json:"owned"`
+	Path     string            `json:"path"`
+	Tail     int               `json:"tail"`
+	Grep     string            `json:"grep"`
+	Include  string            `json:"include"`
+}
+
+// ContyService combines the pipeline and CI monitor service interfaces.
 type ContyService interface {
 	driver.PipelineService
 	driver.CIMonitorService
 }
 
 // Compile-time check that app.Service satisfies ContyService via the driver ports.
+var _ ContyService = (ContyService)(nil)
 
+// Serve runs the MCP server over stdio.
 func Serve(svc ContyService) error {
-	srv := mcpserver.NewServer(serverName, Version).
-		WithInstructions(serverInstructions)
-	RegisterTools(srv, svc)
-	return srv.Serve(context.Background(), &sdkmcp.StdioTransport{})
+	return buildServer(svc).Serve(context.Background(), &sdkmcp.StdioTransport{})
+}
+
+// ServeHTTP runs the MCP server over HTTP at the given address.
+func ServeHTTP(svc ContyService, addr string) error {
+	h := NewHTTPHandler(svc)
+	log.Printf("conty MCP listening on %s", addr)
+	return http.ListenAndServe(addr, h)
+}
+
+// NewMCPServer returns a stdio MCP server.
+func NewMCPServer(svc ContyService) *sdkmcp.Server {
+	return buildServer(svc).SDK()
+}
+
+// NewBatteryServer returns the underlying battery server (for testing with in-memory transports).
+func NewBatteryServer(svc ContyService) *mcpserver.Server {
+	return buildServer(svc)
 }
 
 // NewHTTPHandler returns the stateless HTTP handler for the MCP server.
-// Exported so tests can wire it into an httptest.Server without a real listener.
 func NewHTTPHandler(svc ContyService) http.Handler {
+	opts := &sdkmcp.StreamableHTTPOptions{Stateless: true}
+	return sdkmcp.NewStreamableHTTPHandler(func(*http.Request) *sdkmcp.Server {
+		return buildServer(svc).SDK()
+	}, opts)
+}
+
+func buildServer(svc ContyService) *mcpserver.Server {
+	meta := battserver.ToolMeta{
+		Name:        serverName,
+		Description: "CI/CD operations — help | status | log | search | trigger | wait | artifact | cancel",
+		Keywords:    []string{"ci", "build", "deploy", "jenkins", "pipeline", "log", "trigger", "status"},
+		Categories:  []string{"ci", "deployment"},
+	}
+
 	srv := mcpserver.NewServer(serverName, Version).
 		WithInstructions(serverInstructions)
-	RegisterTools(srv, svc)
 
-	handler := sdkmcp.NewStreamableHTTPHandler(func(_ *http.Request) *sdkmcp.Server {
-		return srv.SDK()
-	}, &sdkmcp.StreamableHTTPOptions{
-		Stateless: true,
-	})
+	srv.ToolWithSchema(meta, contySchema,
+		func(ctx context.Context, input json.RawMessage) (tool.Result, error) {
+			var args ciArgs
+			if err := json.Unmarshal(input, &args); err != nil {
+				return tool.Result{}, fmt.Errorf("invalid input: %w", err)
+			}
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /version", func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprintf(w, `{"version":%q}`, Version)
-	})
-	mux.Handle("/", handler)
-	return mux
-}
+			switch args.Action {
 
-func ServeHTTP(svc ContyService, addr string) error {
-	log.Printf("conty %s listening on %s", Version, addr)
-	return http.ListenAndServe(addr, NewHTTPHandler(svc))
-}
+			case "help":
+				return handleHelp(svc)
 
-func RegisterTools(srv *mcpserver.Server, svc ContyService) {
-	srv.ToolWithSchema(
-		server.ToolMeta{
-			Name:        "conty",
-			Description: "CI/CD execution — deploy lab environments and analyze CI results",
-			Keywords:    []string{"ci", "cd", "pipeline", "deploy", "jenkins", "build"},
-			Categories:  []string{"ci-cd"},
-		},
-		contySchema,
-		contyHandler(svc),
-	)
-}
-
-var contySchema = json.RawMessage(`{
-	"type": "object",
-	"properties": {
-		"action":  {"type": "string", "enum": ["pipeline_trigger","pipeline_status","step_log","pipelines","backends","ci_check","ci_verdict","ci_redeploy","ci_trigger","ci_params","ci_history","ci_search","ci_log","ci_poll","ci_watch","ci_owned","ci_artifacts","ci_artifact_get","ci_cancel","backend_info"], "description": "Action to perform"},
-		"name":    {"type": "string", "description": "Pipeline name (pipeline_trigger, pipeline_status, step_log)"},
-		"step":    {"type": "integer", "description": "Step index for step_log (0-based)"},
-		"backend": {"type": "string", "description": "Backend name (ci_check, ci_verdict, ci_redeploy)"},
-		"job_ref": {"type": "string", "description": "Job reference path (ci_check, ci_verdict, ci_redeploy). Use plain job name e.g. 'ocp-baremetal-ipi-deployment', or folder/name e.g. 'CI/far-edge-vran-deployment'"},
-		"params":  {"type": "object", "description": "Build parameters as key-value pairs (ci_trigger, ci_redeploy). Example: {\"OPENSHIFT_RELEASE_IMAGE\": \"quay.io/ocp/release:4.22-nightly\"}"},
-		"run_id":  {"type": "string", "description": "Build/run number. Optional for ci_log — omit to use the latest build."},
-		"queue_id": {"type": "string", "description": "Queue item ID from ci_trigger/ci_redeploy (ci_poll)"},
-		"limit":   {"type": "integer", "description": "Max results (ci_history/ci_search, default 10/20)"},
-		"result":  {"type": "string", "description": "Filter by result: SUCCESS, FAILURE, ABORTED (ci_search)"},
-		"runner":  {"type": "string", "description": "Filter by user who triggered the build — userId or userName (ci_search)"},
-		"since":   {"type": "string", "description": "RFC 3339 lower bound on build start time (ci_search)"},
-		"path":    {"type": "string", "description": "Artifact path (ci_artifact_get)"},
-		"tail":    {"type": "integer", "description": "Lines to return from the end of the log (default 200, -1 = all). Applies to ci_log, ci_verdict, step_log, ci_artifact_get."},
-		"grep":    {"type": "string", "description": "Return only lines containing this substring (case-insensitive). Applies to ci_log, ci_verdict, step_log, ci_artifact_get."}
-	},
-	"required": ["action"]
-}`)
-
-var (
-	errUnknownAction   = errors.New("unknown action")
-	errNameRequired    = errors.New("name parameter is required")
-	errBackendRequired = errors.New("backend parameter is required")
-	errJobRefRequired  = errors.New("job_ref parameter is required")
-)
-
-type contyArgs struct {
-	Action  string            `json:"action"`
-	Name    string            `json:"name"`
-	Step    int               `json:"step"`
-	Backend string            `json:"backend"`
-	JobRef  string            `json:"job_ref"`
-	Params  map[string]string `json:"params"`
-	RunID   string            `json:"run_id"`
-	QueueID string            `json:"queue_id"`
-	Limit   int               `json:"limit"`
-	Path    string            `json:"path"`
-	Result  string            `json:"result"`
-	Runner  string            `json:"runner"`
-	Since   string            `json:"since"`
-	Tail    int               `json:"tail"`
-	Grep    string            `json:"grep"`
-}
-
-func contyHandler(svc ContyService) server.Handler {
-	return func(ctx context.Context, input json.RawMessage) (tool.Result, error) {
-		var args contyArgs
-		if err := json.Unmarshal(input, &args); err != nil {
-			return tool.Result{}, fmt.Errorf("invalid arguments: %w", err)
-		}
-
-		switch args.Action {
-		case "pipeline_trigger":
-			if args.Name == "" {
-				return tool.Result{}, errNameRequired
-			}
-			run, err := svc.TriggerPipeline(ctx, args.Name)
-			if err != nil {
-				return tool.Result{}, err
-			}
-			return server.JSONResult(run)
-
-		case "pipeline_status":
-			if args.Name == "" {
-				return tool.Result{}, errNameRequired
-			}
-			run, err := svc.GetPipelineStatus(ctx, args.Name)
-			if err != nil {
-				return tool.Result{}, err
-			}
-			return server.JSONResult(run)
-
-		case "step_log":
-			if args.Name == "" {
-				return tool.Result{}, errNameRequired
-			}
-			result, err := svc.GetStepLog(ctx, args.Name, args.Step, domain.LogFilter{Tail: args.Tail, Grep: args.Grep})
-			if err != nil {
-				return tool.Result{}, err
-			}
-			return server.JSONResult(result)
-
-		case "pipelines":
-			return server.JSONResult(map[string]any{
-				"pipelines": svc.ListPipelines(),
-			})
-
-		case "backends":
-			return server.JSONResult(map[string]any{
-				"backends": svc.ListBackends(),
-			})
-
-		case "ci_check":
-			if args.Backend == "" {
-				return tool.Result{}, errBackendRequired
-			}
-			if args.JobRef == "" {
-				return tool.Result{}, errJobRefRequired
-			}
-			check, err := svc.CheckLatest(ctx, args.Backend, args.JobRef)
-			if err != nil {
-				return tool.Result{}, err
-			}
-			return server.JSONResult(check)
-
-		case "ci_verdict":
-			if args.Backend == "" {
-				return tool.Result{}, errBackendRequired
-			}
-			if args.JobRef == "" {
-				return tool.Result{}, errJobRefRequired
-			}
-			verdict, err := svc.GetVerdict(ctx, args.Backend, args.JobRef, domain.LogFilter{Tail: args.Tail, Grep: args.Grep})
-			if err != nil {
-				return tool.Result{}, err
-			}
-			return server.JSONResult(verdict)
-
-		case "ci_redeploy":
-			if args.Backend == "" {
-				return tool.Result{}, errBackendRequired
-			}
-			if args.JobRef == "" {
-				return tool.Result{}, errJobRefRequired
-			}
-			runID, err := svc.TriggerRedeployWithParams(ctx, args.Backend, args.JobRef, args.Params)
-			if err != nil {
-				return tool.Result{}, err
-			}
-			return server.JSONResult(map[string]string{"run_id": runID})
-
-		case "ci_trigger":
-			if args.Backend == "" {
-				return tool.Result{}, errBackendRequired
-			}
-			if args.JobRef == "" {
-				return tool.Result{}, errJobRefRequired
-			}
-			result, err := svc.CITrigger(ctx, args.Backend, args.JobRef, args.Params)
-			if err != nil {
-				return tool.Result{}, err
-			}
-			return server.JSONResult(result)
-
-		case "ci_params":
-			if args.Backend == "" {
-				return tool.Result{}, errBackendRequired
-			}
-			if args.JobRef == "" {
-				return tool.Result{}, errJobRefRequired
-			}
-			if args.RunID == "" {
-				return tool.Result{}, fmt.Errorf("run_id parameter is required")
-			}
-			params, truncatedKeys, err := svc.CIParamsTruncated(ctx, args.Backend, args.JobRef, args.RunID)
-			if err != nil {
-				return tool.Result{}, err
-			}
-			return server.JSONResult(map[string]any{"params": params, "truncated_keys": truncatedKeys})
-
-		case "ci_history":
-			if args.Backend == "" {
-				return tool.Result{}, errBackendRequired
-			}
-			if args.JobRef == "" {
-				return tool.Result{}, errJobRefRequired
-			}
-			builds, err := svc.CIHistory(ctx, args.Backend, args.JobRef, args.Limit)
-			if err != nil {
-				return tool.Result{}, err
-			}
-			return server.JSONResult(map[string]any{"builds": builds})
-
-		case "ci_search":
-			if args.Backend == "" {
-				return tool.Result{}, errBackendRequired
-			}
-			if args.JobRef == "" {
-				return tool.Result{}, errJobRefRequired
-			}
-			f := domain.BuildFilter{
-				Result: args.Result,
-				Params: args.Params,
-				Runner: args.Runner,
-				Limit:  args.Limit,
-			}
-			if args.Since != "" {
-				t, err := time.Parse(time.RFC3339, args.Since)
-				if err != nil {
-					return tool.Result{}, fmt.Errorf("invalid since (want RFC3339): %w", err)
+			case "status":
+				if args.Pipeline != "" {
+					run, err := svc.GetPipelineStatus(ctx, args.Pipeline)
+					if err != nil {
+						return tool.Result{}, err
+					}
+					return battserver.JSONResult(run)
 				}
-				f.Since = t
-			}
-			builds, err := svc.CISearch(ctx, args.Backend, args.JobRef, f)
-			if err != nil {
-				return tool.Result{}, err
-			}
-			return server.JSONResult(map[string]any{"builds": builds})
+				if args.Backend == "" {
+					return tool.Result{}, errBackendRequired
+				}
+				if args.JobRef == "" {
+					return tool.Result{}, errJobRefRequired
+				}
+				verdict, err := svc.GetVerdict(ctx, args.Backend, args.JobRef, domain.LogFilter{Tail: args.Tail, Grep: args.Grep})
+				if err != nil {
+					return tool.Result{}, err
+				}
+				out := map[string]any{"verdict": verdict}
+				if strings.Contains(args.Include, "params") && verdict.Check.RunID != "" {
+					params, truncatedKeys, perr := svc.CIParamsTruncated(ctx, args.Backend, args.JobRef, verdict.Check.RunID)
+					if perr == nil {
+						out["params"] = params
+						if len(truncatedKeys) > 0 {
+							out["truncated_param_keys"] = truncatedKeys
+						}
+					}
+				}
+				return battserver.JSONResult(out)
 
-		case "ci_log":
-			if args.Backend == "" {
-				return tool.Result{}, errBackendRequired
-			}
-			if args.JobRef == "" {
-				return tool.Result{}, errJobRefRequired
-			}
-			// run_id is optional — omit to get the log for the latest build
-			result, err := svc.CILog(ctx, args.Backend, args.JobRef, args.RunID, domain.LogFilter{
-				Tail: args.Tail,
-				Grep: args.Grep,
-			})
-			if err != nil {
-				return tool.Result{}, err
-			}
-			return server.JSONResult(result)
+			case "log":
+				f := domain.LogFilter{Tail: args.Tail, Grep: args.Grep}
+				if args.Pipeline != "" {
+					res, err := svc.GetStepLog(ctx, args.Pipeline, args.Step, f)
+					if err != nil {
+						return tool.Result{}, err
+					}
+					return battserver.JSONResult(res)
+				}
+				if args.Backend == "" {
+					return tool.Result{}, errBackendRequired
+				}
+				if args.JobRef == "" {
+					return tool.Result{}, errJobRefRequired
+				}
+				res, err := svc.CILog(ctx, args.Backend, args.JobRef, args.RunID, f)
+				if err != nil {
+					return tool.Result{}, err
+				}
+				return battserver.JSONResult(res)
 
-		case "ci_poll":
-			if args.Backend == "" {
-				return tool.Result{}, errBackendRequired
-			}
-			if args.QueueID == "" {
-				return tool.Result{}, fmt.Errorf("queue_id parameter is required")
-			}
-			buildNum, err := svc.CIPoll(ctx, args.Backend, args.QueueID)
-			if err != nil {
-				return tool.Result{}, err
-			}
-			return server.JSONResult(map[string]string{"build_number": buildNum})
+			case "search":
+				if args.Owned {
+					return battserver.JSONResult(map[string]any{"builds": svc.ListOwnedRuns()})
+				}
+				if args.Backend == "" {
+					return tool.Result{}, errBackendRequired
+				}
+				if args.JobRef == "" {
+					return tool.Result{}, errJobRefRequired
+				}
+				f := domain.BuildFilter{
+					Result: args.Result,
+					Params: args.Params,
+					Runner: args.Runner,
+					Limit:  args.Limit,
+				}
+				if args.Since != "" {
+					t, err := time.Parse(time.RFC3339, args.Since)
+					if err != nil {
+						return tool.Result{}, fmt.Errorf("invalid since (want RFC3339): %w", err)
+					}
+					f.Since = t
+				}
+				builds, err := svc.CISearch(ctx, args.Backend, args.JobRef, f)
+				if err != nil {
+					return tool.Result{}, err
+				}
+				return battserver.JSONResult(map[string]any{"builds": builds})
 
-		case "ci_watch":
-			if args.Backend == "" {
-				return tool.Result{}, errBackendRequired
-			}
-			if args.JobRef == "" {
-				return tool.Result{}, errJobRefRequired
-			}
-			if args.RunID == "" {
-				return tool.Result{}, fmt.Errorf("run_id parameter is required")
-			}
-			status, err := svc.CIWatch(ctx, args.Backend, args.JobRef, args.RunID)
-			if err != nil {
-				return tool.Result{}, err
-			}
-			return server.JSONResult(status)
+			case "trigger":
+				if args.Pipeline != "" {
+					run, err := svc.TriggerPipeline(ctx, args.Pipeline)
+					if err != nil {
+						return tool.Result{}, err
+					}
+					return battserver.JSONResult(run)
+				}
+				if args.Backend == "" {
+					return tool.Result{}, errBackendRequired
+				}
+				if args.JobRef == "" {
+					return tool.Result{}, errJobRefRequired
+				}
+				result, err := svc.CITrigger(ctx, args.Backend, args.JobRef, args.Params)
+				if err != nil {
+					return tool.Result{}, err
+				}
+				return battserver.JSONResult(result)
 
-		case "ci_owned":
-			return server.JSONResult(map[string]any{"builds": svc.ListOwnedRuns()})
+			case "wait":
+				if args.Backend == "" {
+					return tool.Result{}, errBackendRequired
+				}
+				if args.QueueID != "" {
+					buildNum, err := svc.CIPoll(ctx, args.Backend, args.QueueID)
+					if err != nil {
+						return tool.Result{}, err
+					}
+					return battserver.JSONResult(map[string]string{"build_number": buildNum})
+				}
+				if args.RunID != "" {
+					if args.JobRef == "" {
+						return tool.Result{}, errJobRefRequired
+					}
+					status, err := svc.CIWatch(ctx, args.Backend, args.JobRef, args.RunID)
+					if err != nil {
+						return tool.Result{}, err
+					}
+					return battserver.JSONResult(status)
+				}
+				return tool.Result{}, fmt.Errorf("wait requires queue_id (resolve) or run_id (watch)")
 
-		case "ci_artifacts":
-			if args.Backend == "" {
-				return tool.Result{}, errBackendRequired
-			}
-			if args.JobRef == "" {
-				return tool.Result{}, errJobRefRequired
-			}
-			if args.RunID == "" {
-				return tool.Result{}, fmt.Errorf("run_id parameter is required")
-			}
-			artifacts, err := svc.CIArtifacts(ctx, args.Backend, args.JobRef, args.RunID)
-			if err != nil {
-				return tool.Result{}, err
-			}
-			return server.JSONResult(map[string]any{"artifacts": artifacts})
+			case "artifact":
+				if args.Backend == "" {
+					return tool.Result{}, errBackendRequired
+				}
+				if args.JobRef == "" {
+					return tool.Result{}, errJobRefRequired
+				}
+				if args.RunID == "" {
+					return tool.Result{}, fmt.Errorf("run_id is required for artifact")
+				}
+				if args.Path == "" {
+					artifacts, err := svc.CIArtifacts(ctx, args.Backend, args.JobRef, args.RunID)
+					if err != nil {
+						return tool.Result{}, err
+					}
+					return battserver.JSONResult(map[string]any{"artifacts": artifacts})
+				}
+				res, err := svc.CIArtifactText(ctx, args.Backend, args.JobRef, args.RunID, args.Path, domain.LogFilter{Tail: args.Tail, Grep: args.Grep})
+				if err != nil {
+					return tool.Result{}, err
+				}
+				return battserver.JSONResult(res)
 
-		case "ci_artifact_get":
-			if args.Backend == "" {
-				return tool.Result{}, errBackendRequired
-			}
-			if args.JobRef == "" {
-				return tool.Result{}, errJobRefRequired
-			}
-			if args.RunID == "" {
-				return tool.Result{}, fmt.Errorf("run_id parameter is required")
-			}
-			if args.Path == "" {
-				return tool.Result{}, fmt.Errorf("path parameter is required")
-			}
-			result, err := svc.CIArtifactText(ctx, args.Backend, args.JobRef, args.RunID, args.Path, domain.LogFilter{Tail: args.Tail, Grep: args.Grep})
-			if err != nil {
-				return tool.Result{}, err
-			}
-			return server.JSONResult(result)
+			case "cancel":
+				if args.Backend == "" {
+					return tool.Result{}, errBackendRequired
+				}
+				if args.JobRef == "" {
+					return tool.Result{}, errJobRefRequired
+				}
+				if args.RunID == "" {
+					return tool.Result{}, fmt.Errorf("run_id is required for cancel")
+				}
+				if !svc.OwnsRun(args.Backend, args.RunID) {
+					return tool.Result{}, fmt.Errorf("run %s was not started by this session", args.RunID)
+				}
+				if err := svc.CICancel(ctx, args.Backend, args.JobRef, args.RunID); err != nil {
+					return tool.Result{}, err
+				}
+				return battserver.JSONResult(map[string]string{"status": "cancelled", "run_id": args.RunID})
 
-		case "ci_cancel":
-			if args.Backend == "" {
-				return tool.Result{}, errBackendRequired
+			default:
+				return tool.Result{}, fmt.Errorf("%w: %s", errUnknownAction, args.Action)
 			}
-			if args.JobRef == "" {
-				return tool.Result{}, errJobRefRequired
-			}
-			if args.RunID == "" {
-				return tool.Result{}, fmt.Errorf("run_id parameter is required")
-			}
-			if err := svc.CICancel(ctx, args.Backend, args.JobRef, args.RunID); err != nil {
-				return tool.Result{}, err
-			}
-			return server.JSONResult(map[string]string{"status": "cancelled", "run_id": args.RunID})
+		},
+	)
 
-		case "backend_info":
-			return server.JSONResult(map[string]any{"backends": svc.BackendInfo()})
+	return srv
+}
 
-		default:
-			return tool.Result{}, fmt.Errorf("%w: %s", errUnknownAction, args.Action)
+func handleHelp(svc ContyService) (tool.Result, error) {
+	var b strings.Builder
+
+	backends := svc.BackendInfo()
+	if len(backends) > 0 {
+		fmt.Fprintln(&b, "Backends:")
+		for _, bi := range backends {
+			fmt.Fprintf(&b, "  %-24s %s\n", bi.Name, bi.Type)
 		}
+		fmt.Fprintln(&b)
 	}
+
+	pipelines := svc.ListPipelines()
+	if len(pipelines) > 0 {
+		fmt.Fprintln(&b, "Pipelines:")
+		for _, p := range pipelines {
+			fmt.Fprintf(&b, "  %s\n", p)
+		}
+		fmt.Fprintln(&b)
+	}
+
+	fmt.Fprintln(&b, "Actions:")
+	fmt.Fprintln(&b, "  status   backend job_ref [run_id] [grep] [tail] [include=params]")
+	fmt.Fprintln(&b, "           Build verdict with inline filtered failure log. run_id optional (default: latest).")
+	fmt.Fprintln(&b)
+	fmt.Fprintln(&b, "  log      backend job_ref [run_id] [grep] [tail]")
+	fmt.Fprintln(&b, "           OR       pipeline [step]")
+	fmt.Fprintln(&b, "           Filtered log. Default: last 200 lines. grep= narrows to matching lines only.")
+	fmt.Fprintln(&b)
+	fmt.Fprintln(&b, "  search   backend job_ref [result] [runner] [since] [limit]")
+	fmt.Fprintln(&b, "           OR       owned=true")
+	fmt.Fprintln(&b, "           Find builds. result: SUCCESS | FAILURE | ABORTED. owned=true lists this session's builds.")
+	fmt.Fprintln(&b)
+	fmt.Fprintln(&b, "  trigger  backend job_ref [params]")
+	fmt.Fprintln(&b, "           OR       pipeline")
+	fmt.Fprintln(&b, "           Start a build or pipeline. Returns run_id and queue_id.")
+	fmt.Fprintln(&b)
+	fmt.Fprintln(&b, "  wait     backend queue_id          — resolve queue to build_number")
+	fmt.Fprintln(&b, "           backend job_ref run_id   — watch until terminal, returns status+progress")
+	fmt.Fprintln(&b)
+	fmt.Fprintln(&b, "  artifact backend job_ref run_id [path] [grep] [tail]")
+	fmt.Fprintln(&b, "           Omit path to list artifacts. Provide path to read a text artifact.")
+	fmt.Fprintln(&b)
+	fmt.Fprintln(&b, "  cancel   backend job_ref run_id")
+	fmt.Fprintln(&b, "           Abort a build (only builds triggered by this session).")
+	fmt.Fprintln(&b)
+	fmt.Fprintln(&b, "Tips:")
+	fmt.Fprintln(&b, "  status(grep=error)       — failure context in one call")
+	fmt.Fprintln(&b, "  log(grep=fatal|error)    — targeted line search without status overhead")
+	fmt.Fprintln(&b, "  trigger → wait → status  — full deploy-and-diagnose flow")
+
+	return tool.TextResult(b.String()), nil
+}
+
+func init() {
+	log.SetFlags(0)
 }

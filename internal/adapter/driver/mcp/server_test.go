@@ -12,7 +12,6 @@ import (
 	"github.com/dpopsuev/conty/internal/app"
 	"github.com/dpopsuev/conty/internal/domain"
 	"github.com/dpopsuev/conty/internal/port/driven/driventest"
-	"github.com/dpopsuev/battery/mcpserver"
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -40,14 +39,11 @@ func setupServer(t *testing.T) *sdkmcp.ClientSession {
 		Steps: []domain.PipelineStep{{JobName: "step-1"}},
 	})
 
-	srv := mcpserver.NewServer("test", "0.0.1")
-	contymcp.RegisterTools(srv, svc)
+	srv := contymcp.NewBatteryServer(svc)
 
 	serverTransport, clientTransport := sdkmcp.NewInMemoryTransports()
 	ctx := context.Background()
-	go func() {
-		_ = srv.Serve(ctx, serverTransport)
-	}()
+	go func() { _ = srv.Serve(ctx, serverTransport) }()
 
 	client := sdkmcp.NewClient(&sdkmcp.Implementation{Name: "test-client", Version: "0.0.1"}, nil)
 	session, err := client.Connect(ctx, clientTransport, nil)
@@ -70,106 +66,92 @@ func callTool(t *testing.T, session *sdkmcp.ClientSession, args map[string]any) 
 	return result
 }
 
-func TestAllListActions_ReturnJSONObjects(t *testing.T) {
+func getText(t *testing.T, result *sdkmcp.CallToolResult) string {
+	t.Helper()
+	if len(result.Content) == 0 {
+		t.Fatal("empty content")
+	}
+	return result.Content[0].(*sdkmcp.TextContent).Text
+}
+
+func TestAllReadActions_ReturnContent(t *testing.T) {
 	session := setupServer(t)
 
 	actions := []struct {
 		name string
 		args map[string]any
 	}{
-		{"pipelines", map[string]any{"action": "pipelines"}},
-		{"backends", map[string]any{"action": "backends"}},
-		{"backend_info", map[string]any{"action": "backend_info"}},
-		{"ci_owned", map[string]any{"action": "ci_owned"}},
-		{"ci_history", map[string]any{"action": "ci_history", "backend": "test", "job_ref": "job-a", "limit": 5}},
-		{"ci_artifacts", map[string]any{"action": "ci_artifacts", "backend": "test", "job_ref": "job-a", "run_id": "run-1"}},
+		{"help", map[string]any{"action": "help"}},
+		{"search-owned", map[string]any{"action": "search", "owned": true}},
+		{"search-builds", map[string]any{"action": "search", "backend": "test", "job_ref": "job-a"}},
+		{"artifact-list", map[string]any{"action": "artifact", "backend": "test", "job_ref": "job-a", "run_id": "run-1"}},
+		{"status-pipeline", map[string]any{"action": "status", "pipeline": "test-pipe"}},
 	}
 
 	for _, tt := range actions {
 		t.Run(tt.name, func(t *testing.T) {
 			result := callTool(t, session, tt.args)
-			if len(result.Content) == 0 {
-				t.Fatal("empty content")
-			}
-			content := result.Content[0].(*sdkmcp.TextContent)
-			text := content.Text
+			text := getText(t, result)
 			if len(text) == 0 {
 				t.Fatal("empty text")
 			}
+			// JSON results must not be bare arrays
 			if text[0] == '[' {
-				t.Errorf("action %s returns bare JSON array — must wrap in object", tt.name)
-			}
-			var obj map[string]any
-			if err := json.Unmarshal([]byte(text), &obj); err != nil {
-				t.Errorf("action %s response is not a JSON object: %v\nraw: %s", tt.name, err, text)
+				t.Errorf("action %s returns bare JSON array — must wrap in object or be text", tt.name)
 			}
 		})
+	}
+}
+
+func TestHelp_ListsBackendsAndActions(t *testing.T) {
+	session := setupServer(t)
+	result := callTool(t, session, map[string]any{"action": "help"})
+	text := getText(t, result)
+
+	for _, want := range []string{"status", "log", "search", "trigger", "wait", "artifact", "cancel"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("help output missing action %q", want)
+		}
 	}
 }
 
 // TestServeHTTP_StatelessSurvivesRestart verifies that the HTTP server can be
 // called without a prior session — simulating what happens when the server
 // restarts and the client's cached Mcp-Session-Id is stale or absent.
-// With Stateless: true each request is self-contained so this must succeed.
 func TestServeHTTP_StatelessSurvivesRestart(t *testing.T) {
 	stub := driventest.NewStubCIAdapter("test")
 	stub.Run = &domain.CIRun{ID: "run-1", Status: domain.RunStatusSuccess, Result: domain.RunResultSuccess}
 
 	svc := app.NewService(stub)
-
 	ts := httptest.NewServer(contymcp.NewHTTPHandler(svc))
 	t.Cleanup(ts.Close)
 
 	client := sdkmcp.NewClient(&sdkmcp.Implementation{Name: "test", Version: "0"}, nil)
 
-	// First connection — normal
-	conn1, err := client.Connect(context.Background(), &sdkmcp.StreamableClientTransport{Endpoint: ts.URL}, nil)
-	if err != nil {
-		t.Fatalf("first connect: %v", err)
-	}
-	result1, err := conn1.CallTool(context.Background(), &sdkmcp.CallToolParams{
-		Name:      "conty",
-		Arguments: map[string]any{"action": "backends"},
-	})
-	if err != nil {
-		t.Fatalf("first call: %v", err)
-	}
-	_ = conn1.Close()
-
-	// Simulate restart: new server on same address, old session ID is gone.
-	// Client connects fresh — must work without any session handshake state.
-	conn2, err := client.Connect(context.Background(), &sdkmcp.StreamableClientTransport{Endpoint: ts.URL}, nil)
-	if err != nil {
-		t.Fatalf("second connect (post-restart): %v", err)
-	}
-	t.Cleanup(func() { _ = conn2.Close() })
-
-	result2, err := conn2.CallTool(context.Background(), &sdkmcp.CallToolParams{
-		Name:      "conty",
-		Arguments: map[string]any{"action": "backends"},
-	})
-	if err != nil {
-		t.Fatalf("second call (post-restart): %v", err)
-	}
-
-	// Both results must be valid JSON with a backends key
-	for i, result := range []*sdkmcp.CallToolResult{result1, result2} {
+	call := func(t *testing.T, label string) {
+		t.Helper()
+		conn, err := client.Connect(context.Background(), &sdkmcp.StreamableClientTransport{Endpoint: ts.URL}, nil)
+		if err != nil {
+			t.Fatalf("%s connect: %v", label, err)
+		}
+		defer func() { _ = conn.Close() }()
+		result, err := conn.CallTool(context.Background(), &sdkmcp.CallToolParams{
+			Name:      "conty",
+			Arguments: map[string]any{"action": "help"},
+		})
+		if err != nil {
+			t.Fatalf("%s call: %v", label, err)
+		}
 		if len(result.Content) == 0 {
-			t.Fatalf("call %d: empty content", i+1)
-		}
-		text := result.Content[0].(*sdkmcp.TextContent).Text
-		var obj map[string]any
-		if err := json.Unmarshal([]byte(text), &obj); err != nil {
-			t.Fatalf("call %d: invalid JSON: %v", i+1, err)
-		}
-		if _, ok := obj["backends"]; !ok {
-			t.Errorf("call %d: missing 'backends' key in response: %s", i+1, text)
+			t.Fatalf("%s: empty content", label)
 		}
 	}
+
+	call(t, "first")
+	call(t, "second") // simulates post-restart with fresh connection
 }
 
-// TestServeHTTP_StaleSessionIDIgnored verifies that sending a stale
-// Mcp-Session-Id header does not return 404 session-not-found.
+// TestServeHTTP_StaleSessionIDIgnored verifies stateless mode ignores bad session IDs.
 func TestServeHTTP_StaleSessionIDIgnored(t *testing.T) {
 	stub := driventest.NewStubCIAdapter("test")
 	stub.Run = &domain.CIRun{ID: "run-1", Status: domain.RunStatusSuccess}
@@ -178,7 +160,6 @@ func TestServeHTTP_StaleSessionIDIgnored(t *testing.T) {
 	ts := httptest.NewServer(contymcp.NewHTTPHandler(svc))
 	t.Cleanup(ts.Close)
 
-	// POST with a bogus session ID — stateless server must not 404.
 	body := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"0"}}}`
 	req, _ := http.NewRequest(http.MethodPost, ts.URL, strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -192,6 +173,19 @@ func TestServeHTTP_StaleSessionIDIgnored(t *testing.T) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusNotFound {
-		t.Errorf("got 404 session-not-found with stale session ID — stateless mode broken")
+		t.Errorf("got 404 with stale session ID — stateless mode broken")
+	}
+}
+
+func TestSearch_OwnedReturnsList(t *testing.T) {
+	session := setupServer(t)
+	result := callTool(t, session, map[string]any{"action": "search", "owned": true})
+	text := getText(t, result)
+	var obj map[string]any
+	if err := json.Unmarshal([]byte(text), &obj); err != nil {
+		t.Fatalf("not JSON: %v\n%s", err, text)
+	}
+	if _, ok := obj["builds"]; !ok {
+		t.Errorf("missing builds key: %s", text)
 	}
 }
