@@ -28,7 +28,7 @@ type StepLogCall struct {
 
 type StubPipelineService struct {
 	PipelineRun *domain.PipelineRun
-	StepLog     string
+	StepLog     domain.LogResult
 	Pipelines   []string
 	Err         error
 
@@ -52,7 +52,7 @@ func (s *StubPipelineService) GetPipelineStatus(_ context.Context, name string) 
 	return s.PipelineRun, s.Err
 }
 
-func (s *StubPipelineService) GetStepLog(_ context.Context, name string, step int) (string, error) {
+func (s *StubPipelineService) GetStepLog(_ context.Context, name string, step int, _ domain.LogFilter) (domain.LogResult, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.StepLogCalls = append(s.StepLogCalls, StepLogCall{Name: name, Step: step})
@@ -174,7 +174,7 @@ func (s *StubCIMonitorService) CheckLatest(_ context.Context, backend, jobRef st
 	return s.Check, s.Err
 }
 
-func (s *StubCIMonitorService) GetVerdict(_ context.Context, backend, jobRef string) (*domain.CIVerdict, error) {
+func (s *StubCIMonitorService) GetVerdict(_ context.Context, backend, jobRef string, _ domain.LogFilter) (*domain.CIVerdict, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.VerdictCalls = append(s.VerdictCalls, GetVerdictCall{Backend: backend, JobRef: jobRef})
@@ -259,6 +259,14 @@ func (s *StubCIMonitorService) CIArtifactGet(_ context.Context, backend, jobRef,
 	defer s.mu.Unlock()
 	s.CIArtifactGetCalls = append(s.CIArtifactGetCalls, CIArtifactGetCall{Backend: backend, JobRef: jobRef, RunID: runID, Path: path})
 	return s.Artifact, s.Err
+}
+
+func (s *StubCIMonitorService) CIArtifactText(_ context.Context, _, _, _, _ string, _ domain.LogFilter) (domain.LogResult, error) {
+	return domain.LogResult{Lines: []string{string(s.Artifact)}}, s.Err
+}
+
+func (s *StubCIMonitorService) CIParamsTruncated(_ context.Context, _, _, _ string) (map[string]string, []string, error) {
+	return s.Params, nil, s.Err
 }
 
 func (s *StubCIMonitorService) BackendInfo() []domain.BackendInfo {

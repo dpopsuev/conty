@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/dpopsuev/conty/internal/domain"
 	"github.com/dpopsuev/conty/internal/port/driven"
@@ -134,24 +135,28 @@ func (s *Service) GetPipelineStatus(_ context.Context, name string) (*domain.Pip
 	return run, nil
 }
 
-func (s *Service) GetStepLog(ctx context.Context, name string, step int) (string, error) {
+func (s *Service) GetStepLog(ctx context.Context, name string, step int, f domain.LogFilter) (domain.LogResult, error) {
 	s.mu.RLock()
 	p, ok := s.pipelines[name]
 	run := s.runs[name]
 	s.mu.RUnlock()
 	if !ok || run == nil {
-		return "", fmt.Errorf("%w: %s", ErrPipelineNotFound, name)
+		return domain.LogResult{}, fmt.Errorf("%w: %s", ErrPipelineNotFound, name)
 	}
 	if step < 0 || step >= len(run.Steps) {
-		return "", fmt.Errorf("%w: %d (pipeline has %d steps)", ErrStepOutOfRange, step, len(run.Steps))
+		return domain.LogResult{}, fmt.Errorf("%w: %d (pipeline has %d steps)", ErrStepOutOfRange, step, len(run.Steps))
 	}
 
 	a, err := s.adapter(p.Backend)
 	if err != nil {
-		return "", err
+		return domain.LogResult{}, err
 	}
 
-	return a.GetJobLog(ctx, run.Steps[step].JobName, run.Steps[step].RunID)
+	raw, err := a.GetJobLog(ctx, run.Steps[step].JobName, run.Steps[step].RunID)
+	if err != nil {
+		return domain.LogResult{}, err
+	}
+	return applyLogFilter(raw, f), nil
 }
 
 func (s *Service) ListBackends() []string {
@@ -214,6 +219,38 @@ func (s *Service) CIArtifactGet(ctx context.Context, backend, jobRef, runID, pat
 	return a.GetArtifact(ctx, jobRef, runID, path)
 }
 
+// CIArtifactText fetches an artifact and applies LogFilter if the content is
+// valid UTF-8 text. Binary artifacts return an error so callers can fall back
+// to downloading the raw bytes via CIArtifactGet.
+func (s *Service) CIArtifactText(ctx context.Context, backend, jobRef, runID, path string, f domain.LogFilter) (domain.LogResult, error) {
+	data, err := s.CIArtifactGet(ctx, backend, jobRef, runID, path)
+	if err != nil {
+		return domain.LogResult{}, err
+	}
+	if !utf8.Valid(data) {
+		return domain.LogResult{}, fmt.Errorf("artifact is binary; use ci_artifacts to get the download URL")
+	}
+	return applyLogFilter(string(data), f), nil
+}
+
+// CIParamsTruncated fetches build params and caps each value at maxValueLen
+// characters to prevent large YAML/JSON blobs from flooding the context.
+func (s *Service) CIParamsTruncated(ctx context.Context, backend, jobRef, runID string) (map[string]string, []string, error) {
+	params, err := s.CIParams(ctx, backend, jobRef, runID)
+	if err != nil {
+		return nil, nil, err
+	}
+	const maxValueLen = 500
+	var truncated []string
+	for k, v := range params {
+		if len(v) > maxValueLen {
+			params[k] = v[:maxValueLen] + "..."
+			truncated = append(truncated, k)
+		}
+	}
+	return params, truncated, nil
+}
+
 func (s *Service) CheckLatest(ctx context.Context, backend, jobRef string) (*domain.CICheck, error) {
 	a, err := s.adapter(backend)
 	if err != nil {
@@ -234,7 +271,7 @@ func (s *Service) CheckLatest(ctx context.Context, backend, jobRef string) (*dom
 	}, nil
 }
 
-func (s *Service) GetVerdict(ctx context.Context, backend, jobRef string) (*domain.CIVerdict, error) {
+func (s *Service) GetVerdict(ctx context.Context, backend, jobRef string, f domain.LogFilter) (*domain.CIVerdict, error) {
 	check, err := s.CheckLatest(ctx, backend, jobRef)
 	if err != nil {
 		return nil, err
@@ -249,7 +286,7 @@ func (s *Service) GetVerdict(ctx context.Context, backend, jobRef string) (*doma
 
 	if check.Status == domain.RunStatusFailure {
 		a, _ := s.adapter(backend)
-		verdict.Failure = s.classifyFailure(ctx, a, jobRef, check.RunID)
+		verdict.Failure = s.classifyFailure(ctx, a, jobRef, check.RunID, f)
 	}
 
 	return verdict, nil
@@ -341,6 +378,13 @@ func (s *Service) CILog(ctx context.Context, backend, jobRef, runID string, f do
 	a, err := s.adapter(backend)
 	if err != nil {
 		return domain.LogResult{}, err
+	}
+	if runID == "" {
+		check, err := s.CheckLatest(ctx, backend, jobRef)
+		if err != nil {
+			return domain.LogResult{}, err
+		}
+		runID = check.RunID
 	}
 	raw, err := a.GetJobLog(ctx, jobRef, runID)
 	if err != nil {
@@ -468,7 +512,7 @@ func (s *Service) CIWatch(ctx context.Context, backend, jobRef, runID string) (*
 	return ws, nil
 }
 
-func (s *Service) classifyFailure(ctx context.Context, a driven.CIAdapter, jobRef, runID string) *domain.FailureContext {
+func (s *Service) classifyFailure(ctx context.Context, a driven.CIAdapter, jobRef, runID string, f domain.LogFilter) *domain.FailureContext {
 	fc := &domain.FailureContext{
 		Classification: domain.FailureUnknown,
 		CanRetry:       false,
@@ -484,14 +528,10 @@ func (s *Service) classifyFailure(ctx context.Context, a driven.CIAdapter, jobRe
 		}
 	}
 
-	log, err := a.GetJobLog(ctx, jobRef, runID)
-	if err == nil && len(log) > 0 {
-		maxLen := 2000
-		if len(log) < maxLen {
-			maxLen = len(log)
-		}
-		fc.LogExcerpt = log[len(log)-maxLen:]
-		fc.Classification, fc.CanRetry = classifyLog(fc.LogExcerpt)
+	raw, err := a.GetJobLog(ctx, jobRef, runID)
+	if err == nil && len(raw) > 0 {
+		fc.Log = applyLogFilter(raw, f)
+		fc.Classification, fc.CanRetry = classifyLog(strings.Join(fc.Log.Lines, "\n"))
 	}
 
 	return fc

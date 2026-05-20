@@ -25,7 +25,7 @@ type TestSummary struct {
 
 type FailureContext struct {
 	FailedJob      string                `json:"failed_job"`
-	LogExcerpt     string                `json:"log_excerpt"`
+	Log            LogResult             `json:"log"`
 	Classification FailureClassification `json:"classification"`
 	CanRetry       bool                  `json:"can_retry"`
 }

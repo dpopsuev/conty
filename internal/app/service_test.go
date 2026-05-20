@@ -133,7 +133,7 @@ func TestGetVerdict_Success(t *testing.T) {
 	stub := stubAdapter()
 	svc := app.NewService(stub)
 
-	verdict, err := svc.GetVerdict(context.Background(), "test", "CI/some-job")
+	verdict, err := svc.GetVerdict(context.Background(), "test", "CI/some-job", domain.LogFilter{})
 	if err != nil {
 		t.Fatalf("GetVerdict: %v", err)
 	}
@@ -159,7 +159,7 @@ func TestGetVerdict_Failure(t *testing.T) {
 	stub.Log = "error: connection timed out"
 	svc := app.NewService(stub)
 
-	verdict, err := svc.GetVerdict(context.Background(), "test", "CI/some-job")
+	verdict, err := svc.GetVerdict(context.Background(), "test", "CI/some-job", domain.LogFilter{})
 	if err != nil {
 		t.Fatalf("GetVerdict: %v", err)
 	}
@@ -503,7 +503,7 @@ func TestGetVerdict_FailureClassification(t *testing.T) {
 	stub.Log = "error: connection timed out after 30s connecting to API server"
 	svc := app.NewService(stub)
 
-	verdict, err := svc.GetVerdict(context.Background(), "test", "my-job")
+	verdict, err := svc.GetVerdict(context.Background(), "test", "my-job", domain.LogFilter{})
 	if err != nil {
 		t.Fatalf("GetVerdict: %v", err)
 	}

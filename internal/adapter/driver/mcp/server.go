@@ -32,17 +32,17 @@ Actions:
   pipelines         — List available pipelines
   backends          — List available CI backend names
   ci_check          — Check latest CI run status for a job
-  ci_verdict        — Get structured pass/fail verdict with failure context
+  ci_verdict        — Get structured pass/fail verdict; accepts tail/grep to filter the failure log inline
   ci_redeploy       — Trigger redeployment of a CI job
   ci_trigger        — Trigger a build with custom parameters, returns queue_id and build_number
-  ci_params         — Get parameters from a specific build number (clone-and-override workflow)
+  ci_params         — Get parameters from a specific build (values truncated at 500 chars)
   ci_history        — List recent builds for a job with status
-  ci_log            — Get console output for a specific build number
+  ci_log            — Get filtered log (tail/grep); run_id optional — omit for latest build
   ci_poll           — Resolve a queue ID to a build number
   ci_watch          — Watch a build: status, progress %, overdue flag (uses estimated duration)
   ci_owned          — List builds triggered by this Conty session
   ci_artifacts      — List artifacts for a build
-  ci_artifact_get   — Download a specific artifact by path
+  ci_artifact_get   — Download a text artifact with tail/grep filtering (binary artifacts: use ci_artifacts for URL)
   ci_cancel         — Abort an owned build (only builds started by this session)
   backend_info      — List backends with type details`
 
@@ -109,15 +109,15 @@ var contySchema = json.RawMessage(`{
 		"backend": {"type": "string", "description": "Backend name (ci_check, ci_verdict, ci_redeploy)"},
 		"job_ref": {"type": "string", "description": "Job reference path (ci_check, ci_verdict, ci_redeploy). Use plain job name e.g. 'ocp-baremetal-ipi-deployment', or folder/name e.g. 'CI/far-edge-vran-deployment'"},
 		"params":  {"type": "object", "description": "Build parameters as key-value pairs (ci_trigger, ci_redeploy). Example: {\"OPENSHIFT_RELEASE_IMAGE\": \"quay.io/ocp/release:4.22-nightly\"}"},
-		"run_id":  {"type": "string", "description": "Build/run number (ci_params, ci_log)"},
+		"run_id":  {"type": "string", "description": "Build/run number. Optional for ci_log — omit to use the latest build."},
 		"queue_id": {"type": "string", "description": "Queue item ID from ci_trigger/ci_redeploy (ci_poll)"},
 		"limit":   {"type": "integer", "description": "Max results (ci_history/ci_search, default 10/20)"},
 		"result":  {"type": "string", "description": "Filter by result: SUCCESS, FAILURE, ABORTED (ci_search)"},
 		"runner":  {"type": "string", "description": "Filter by user who triggered the build — userId or userName (ci_search)"},
 		"since":   {"type": "string", "description": "RFC 3339 lower bound on build start time (ci_search)"},
 		"path":    {"type": "string", "description": "Artifact path (ci_artifact_get)"},
-		"tail":    {"type": "integer", "description": "ci_log: lines to return from the end of the log (default 200, -1 = all)"},
-		"grep":    {"type": "string", "description": "ci_log: return only lines containing this substring (case-insensitive)"}
+		"tail":    {"type": "integer", "description": "Lines to return from the end of the log (default 200, -1 = all). Applies to ci_log, ci_verdict, step_log, ci_artifact_get."},
+		"grep":    {"type": "string", "description": "Return only lines containing this substring (case-insensitive). Applies to ci_log, ci_verdict, step_log, ci_artifact_get."}
 	},
 	"required": ["action"]
 }`)
@@ -179,11 +179,11 @@ func contyHandler(svc ContyService) server.Handler {
 			if args.Name == "" {
 				return tool.Result{}, errNameRequired
 			}
-			log, err := svc.GetStepLog(ctx, args.Name, args.Step)
+			result, err := svc.GetStepLog(ctx, args.Name, args.Step, domain.LogFilter{Tail: args.Tail, Grep: args.Grep})
 			if err != nil {
 				return tool.Result{}, err
 			}
-			return tool.TextResult(log), nil
+			return server.JSONResult(result)
 
 		case "pipelines":
 			return server.JSONResult(map[string]any{
@@ -215,7 +215,7 @@ func contyHandler(svc ContyService) server.Handler {
 			if args.JobRef == "" {
 				return tool.Result{}, errJobRefRequired
 			}
-			verdict, err := svc.GetVerdict(ctx, args.Backend, args.JobRef)
+			verdict, err := svc.GetVerdict(ctx, args.Backend, args.JobRef, domain.LogFilter{Tail: args.Tail, Grep: args.Grep})
 			if err != nil {
 				return tool.Result{}, err
 			}
@@ -257,11 +257,11 @@ func contyHandler(svc ContyService) server.Handler {
 			if args.RunID == "" {
 				return tool.Result{}, fmt.Errorf("run_id parameter is required")
 			}
-			params, err := svc.CIParams(ctx, args.Backend, args.JobRef, args.RunID)
+			params, truncatedKeys, err := svc.CIParamsTruncated(ctx, args.Backend, args.JobRef, args.RunID)
 			if err != nil {
 				return tool.Result{}, err
 			}
-			return server.JSONResult(params)
+			return server.JSONResult(map[string]any{"params": params, "truncated_keys": truncatedKeys})
 
 		case "ci_history":
 			if args.Backend == "" {
@@ -309,9 +309,7 @@ func contyHandler(svc ContyService) server.Handler {
 			if args.JobRef == "" {
 				return tool.Result{}, errJobRefRequired
 			}
-			if args.RunID == "" {
-				return tool.Result{}, fmt.Errorf("run_id parameter is required")
-			}
+			// run_id is optional — omit to get the log for the latest build
 			result, err := svc.CILog(ctx, args.Backend, args.JobRef, args.RunID, domain.LogFilter{
 				Tail: args.Tail,
 				Grep: args.Grep,
@@ -382,11 +380,11 @@ func contyHandler(svc ContyService) server.Handler {
 			if args.Path == "" {
 				return tool.Result{}, fmt.Errorf("path parameter is required")
 			}
-			data, err := svc.CIArtifactGet(ctx, args.Backend, args.JobRef, args.RunID, args.Path)
+			result, err := svc.CIArtifactText(ctx, args.Backend, args.JobRef, args.RunID, args.Path, domain.LogFilter{Tail: args.Tail, Grep: args.Grep})
 			if err != nil {
 				return tool.Result{}, err
 			}
-			return tool.TextResult(string(data)), nil
+			return server.JSONResult(result)
 
 		case "ci_cancel":
 			if args.Backend == "" {

@@ -51,7 +51,7 @@ var checkCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		verdict, err := svc.GetVerdict(cmd.Context(), backend, args[0])
+		verdict, err := svc.GetVerdict(cmd.Context(), backend, args[0], domain.LogFilter{})
 		if err != nil {
 			return err
 		}
