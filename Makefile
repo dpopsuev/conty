@@ -40,20 +40,27 @@ image:
 	$(CONTAINER_RT) build \
 		--build-arg VERSION=$(VERSION) \
 		--secret id=rh_cas,src=$(RH_CAS_BUNDLE) \
-		-t $(IMAGE) -t conty:latest .
+		-t $(IMAGE) .
 	@rm -f $(RH_CAS_BUNDLE)
 
 deploy: image
-	-$(CONTAINER_RT) stop conty 2>/dev/null
-	-$(CONTAINER_RT) rm conty 2>/dev/null
-	$(CONTAINER_RT) run -d --name conty \
-		-p 8082:8082 \
-		-e JENKINS_CI_API_KEY=$${JENKINS_CI_API_KEY} \
-		-e JENKINS_AUTO_API_KEY=$${JENKINS_AUTO_API_KEY} \
-		-e GITHUB_TOKEN=$${GITHUB_TOKEN} \
-		-v $(HOME)/.config/conty:/root/.config/conty:ro,z \
-		$(IMAGE) \
-		serve --addr :8082
+	@SERVICE=$${HOME}/.config/systemd/user/container-conty.service; \
+	if [ -f "$$SERVICE" ]; then \
+		sed -i "s|conty:v[^ ]*|$(IMAGE)|g" "$$SERVICE"; \
+		systemctl --user daemon-reload; \
+		systemctl --user restart container-conty.service; \
+		echo "systemd service restarted with $(IMAGE)"; \
+	else \
+		$(CONTAINER_RT) stop conty 2>/dev/null || true; \
+		$(CONTAINER_RT) rm conty 2>/dev/null || true; \
+		$(CONTAINER_RT) run -d --name conty \
+			-p 8082:8082 \
+			-e JENKINS_CI_API_KEY=$${JENKINS_CI_API_KEY} \
+			-e JENKINS_AUTO_API_KEY=$${JENKINS_AUTO_API_KEY} \
+			-e GITHUB_TOKEN=$${GITHUB_TOKEN} \
+			-v $(HOME)/.config/conty:/root/.config/conty:ro,z \
+			$(IMAGE) serve --addr :8082; \
+	fi
 
 release:
 	@test -n "$(V)" || (echo "usage: make release V=v0.8.0" && exit 1)
