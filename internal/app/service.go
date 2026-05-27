@@ -200,6 +200,22 @@ func (s *Service) CIArtifacts(ctx context.Context, backend, jobRef, runID string
 	return a.ListArtifacts(ctx, jobRef, runID)
 }
 
+func (s *Service) CIGetRun(ctx context.Context, backend, jobRef, runID string) (*domain.CIRun, error) {
+	a, err := s.adapter(backend)
+	if err != nil {
+		return nil, err
+	}
+	return a.PollRun(ctx, jobRef, runID)
+}
+
+func (s *Service) CIDownstream(ctx context.Context, backend, downstreamJob, upstreamJob, upstreamRunID string) ([]domain.CIRun, error) {
+	a, err := s.adapter(backend)
+	if err != nil {
+		return nil, err
+	}
+	return a.GetDownstreamRuns(ctx, downstreamJob, upstreamJob, upstreamRunID)
+}
+
 func (s *Service) CICancel(ctx context.Context, backend, jobRef, runID string) error {
 	if !s.OwnsRun(backend, runID) {
 		return fmt.Errorf("cannot cancel %s #%s: not owned by this session", jobRef, runID)

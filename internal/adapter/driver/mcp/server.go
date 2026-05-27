@@ -29,7 +29,7 @@ const serverInstructions = "CI/CD operations. Call ci(action=help) first — lis
 var contySchema = json.RawMessage(`{
 	"type": "object",
 	"properties": {
-		"action":   {"type": "string", "enum": ["help","status","log","search","trigger","wait","artifact","cancel"], "description": "Action to perform. Call help first to see backends and pipelines."},
+		"action":   {"type": "string", "enum": ["help","status","log","search","trigger","wait","artifact","cancel","upstream","downstream"], "description": "Action to perform. Call help first to see backends and pipelines."},
 		"backend":  {"type": "string", "description": "Backend name (listed by help)"},
 		"job_ref":  {"type": "string", "description": "Job path e.g. 'ocp-baremetal-ipi-deployment' or 'CI/far-edge-vran-deployment'"},
 		"run_id":   {"type": "string", "description": "Build number. Optional for status/log — omit to use the latest build."},
@@ -45,7 +45,8 @@ var contySchema = json.RawMessage(`{
 		"path":     {"type": "string", "description": "Artifact path (artifact). Omit to list all artifacts for the build."},
 		"tail":     {"type": "integer", "description": "Lines from end of log (default 200, -1 = all). Applies to status, log, artifact."},
 		"grep":     {"type": "string", "description": "Return only log lines containing this substring, case-insensitive. Applies to status, log, artifact."},
-		"include":  {"type": "string", "description": "Comma-separated extras for status: 'params' to include build parameters."}
+		"include":        {"type": "string", "description": "Comma-separated extras for status: 'params' to include build parameters."},
+		"downstream_job": {"type": "string", "description": "Downstream job name for the downstream action. Required — Jenkins has no native reverse index."}
 	},
 	"required": ["action"]
 }`)
@@ -73,7 +74,8 @@ type ciArgs struct {
 	Path     string            `json:"path"`
 	Tail     int               `json:"tail"`
 	Grep     string            `json:"grep"`
-	Include  string            `json:"include"`
+	Include       string            `json:"include"`
+	DownstreamJob string            `json:"downstream_job"`
 }
 
 // ContyService combines the pipeline and CI monitor service interfaces.
@@ -118,7 +120,7 @@ func NewHTTPHandler(svc ContyService) http.Handler {
 func buildServer(svc ContyService) *mcpserver.Server {
 	meta := battserver.ToolMeta{
 		Name:        serverName,
-		Description: "CI/CD operations — help | status | log | search | trigger | wait | artifact | cancel",
+		Description: "CI/CD operations — help | status | log | search | trigger | wait | artifact | cancel | upstream | downstream",
 		Keywords:    []string{"ci", "build", "deploy", "jenkins", "pipeline", "log", "trigger", "status"},
 		Categories:  []string{"ci", "deployment"},
 	}
@@ -302,6 +304,49 @@ func buildServer(svc ContyService) *mcpserver.Server {
 				}
 				return battserver.JSONResult(map[string]string{"status": "cancelled", "run_id": args.RunID})
 
+			case "upstream":
+				if args.Backend == "" {
+					return tool.Result{}, errBackendRequired
+				}
+				if args.JobRef == "" {
+					return tool.Result{}, errJobRefRequired
+				}
+				if args.RunID == "" {
+					return tool.Result{}, fmt.Errorf("run_id is required for upstream action")
+				}
+				run, err := svc.CIGetRun(ctx, args.Backend, args.JobRef, args.RunID)
+				if err != nil {
+					return tool.Result{}, err
+				}
+				if run.UpstreamJob == "" {
+					return tool.Result{}, fmt.Errorf("no upstream cause found for %s #%s", args.JobRef, args.RunID)
+				}
+				return battserver.JSONResult(map[string]any{
+					"upstream_job":    run.UpstreamJob,
+					"upstream_run_id": run.UpstreamRunID,
+					"job_ref":         args.JobRef,
+					"run_id":          args.RunID,
+				})
+
+			case "downstream":
+				if args.Backend == "" {
+					return tool.Result{}, errBackendRequired
+				}
+				if args.JobRef == "" {
+					return tool.Result{}, errJobRefRequired
+				}
+				if args.RunID == "" {
+					return tool.Result{}, fmt.Errorf("run_id is required for downstream action")
+				}
+				if args.DownstreamJob == "" {
+					return tool.Result{}, fmt.Errorf("downstream_job is required for downstream action")
+				}
+				runs, err := svc.CIDownstream(ctx, args.Backend, args.DownstreamJob, args.JobRef, args.RunID)
+				if err != nil {
+					return tool.Result{}, err
+				}
+				return battserver.JSONResult(map[string]any{"builds": runs})
+
 			default:
 				return tool.Result{}, fmt.Errorf("%w: %s", errUnknownAction, args.Action)
 			}
@@ -356,6 +401,13 @@ func handleHelp(svc ContyService) (tool.Result, error) {
 	fmt.Fprintln(&b)
 	fmt.Fprintln(&b, "  cancel   backend job_ref run_id")
 	fmt.Fprintln(&b, "           Abort a build (only builds triggered by this session).")
+	fmt.Fprintln(&b)
+	fmt.Fprintln(&b, "  upstream backend job_ref run_id")
+	fmt.Fprintln(&b, "           Return upstream_job and upstream_run_id from the build's cause chain.")
+	fmt.Fprintln(&b)
+	fmt.Fprintln(&b, "  downstream backend job_ref run_id downstream_job")
+	fmt.Fprintln(&b, "           Find builds in downstream_job triggered by job_ref#run_id.")
+	fmt.Fprintln(&b, "           downstream_job required — Jenkins has no native reverse index.")
 	fmt.Fprintln(&b)
 	fmt.Fprintln(&b, "Tips:")
 	fmt.Fprintln(&b, "  status(grep=error)       — failure context in one call")

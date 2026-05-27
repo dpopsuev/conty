@@ -191,6 +191,11 @@ func (a *Adapter) CancelRun(ctx context.Context, jobName string, runID string) e
 	return a.inner.CancelRun(ctx, jobName, runID)
 }
 
+// GetDownstreamRuns is not cached — results are time-sensitive and filter-dependent.
+func (a *Adapter) GetDownstreamRuns(ctx context.Context, downstreamJob, upstreamJob, upstreamRunID string) ([]domain.CIRun, error) {
+	return a.inner.GetDownstreamRuns(ctx, downstreamJob, upstreamJob, upstreamRunID)
+}
+
 func (a *Adapter) GetArtifact(ctx context.Context, jobName string, runID string, path string) ([]byte, error) {
 	key := fmt.Sprintf("artifact:%s:%s:%s", jobName, runID, path)
 	if v, ok := a.get(key); ok {

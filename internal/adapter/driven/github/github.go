@@ -423,6 +423,10 @@ func mapGHResult(conclusion string) domain.RunResult {
 
 func (a *Adapter) CancelRun(_ context.Context, _, _ string) error { return nil }
 
+func (a *Adapter) GetDownstreamRuns(_ context.Context, _, _, _ string) ([]domain.CIRun, error) {
+	return nil, nil
+}
+
 func (a *Adapter) SearchBuilds(ctx context.Context, jobName string, f domain.BuildFilter) ([]domain.CIRun, error) {
 	return nil, fmt.Errorf("SearchBuilds not supported for GitHub Actions backend")
 }

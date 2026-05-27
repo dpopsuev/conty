@@ -284,3 +284,14 @@ func (s *StubCIMonitorService) CICancel(_ context.Context, backend, jobRef, runI
 func (s *StubCIMonitorService) CISearch(_ context.Context, backend, jobRef string, f domain.BuildFilter) ([]domain.CIRun, error) {
 	return s.Builds, s.Err
 }
+
+func (s *StubCIMonitorService) CIGetRun(_ context.Context, _, _, _ string) (*domain.CIRun, error) {
+	if len(s.Builds) > 0 {
+		return &s.Builds[0], s.Err
+	}
+	return nil, s.Err
+}
+
+func (s *StubCIMonitorService) CIDownstream(_ context.Context, _, _, _, _ string) ([]domain.CIRun, error) {
+	return s.Builds, s.Err
+}

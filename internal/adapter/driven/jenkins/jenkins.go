@@ -330,6 +330,68 @@ func (a *Adapter) GetBuildParams(ctx context.Context, jobName string, runID stri
 	return params, nil
 }
 
+// buildJobPath converts a folder-scoped Jenkins job name (e.g. "CI/my-job") into
+// the URL segment expected by the raw Jenkins API (e.g. "/job/CI/job/my-job").
+func buildJobPath(jobName string) string {
+	parts := strings.Split(jobName, "/")
+	var path string
+	for _, p := range parts {
+		path += "/job/" + p
+	}
+	return path
+}
+
+// buildAction is a single entry from the Jenkins build actions array.
+// It covers parameter sets and cause chains including upstream build references.
+type buildAction struct {
+	Parameters []struct {
+		Name  string `json:"name"`
+		Value any    `json:"value"`
+	} `json:"parameters"`
+	Causes []struct {
+		UserID          string `json:"userId"`
+		UserName        string `json:"userName"`
+		UpstreamBuild   int64  `json:"upstreamBuild"`
+		UpstreamProject string `json:"upstreamProject"`
+	} `json:"causes"`
+}
+
+// mapCauses extracts the upstream job name and build number from a buildAction
+// slice. Returns empty strings when no upstream cause is present.
+func mapCauses(actions []buildAction) (upstreamJob, upstreamRunID string) {
+	for _, a := range actions {
+		for _, c := range a.Causes {
+			if c.UpstreamProject != "" && c.UpstreamBuild != 0 {
+				return c.UpstreamProject, strconv.FormatInt(c.UpstreamBuild, 10)
+			}
+		}
+	}
+	return
+}
+
+// extractUpstreamFromBuild reads upstream cause fields from a gojenkins Build's
+// raw action array without making an additional HTTP call. Jenkins encodes
+// upstreamBuild as a JSON number that Go's JSON decoder maps to float64 when
+// decoded into the generalObj map[string]interface{} fields.
+func extractUpstreamFromBuild(b *gojenkins.Build) (upstreamJob, upstreamRunID string) {
+	for _, a := range b.Raw.Actions {
+		for _, c := range a.Causes {
+			proj, _ := c["upstreamProject"].(string)
+			var num int64
+			switch v := c["upstreamBuild"].(type) {
+			case float64:
+				num = int64(v)
+			case int64:
+				num = v
+			}
+			if proj != "" && num != 0 {
+				return proj, strconv.FormatInt(num, 10)
+			}
+		}
+	}
+	return
+}
+
 // listBuildsResponse is the minimal Jenkins API shape used by ListBuilds.
 type listBuildsResponse struct {
 	Builds []struct {
@@ -353,11 +415,7 @@ func (a *Adapter) ListBuilds(ctx context.Context, jobName string, limit int) ([]
 		slog.Int("limit", limit))
 
 	// Build the job URL, handling folder paths (e.g. "CI/my-job" → /job/CI/job/my-job).
-	parts := strings.Split(jobName, "/")
-	var jobPath string
-	for _, p := range parts {
-		jobPath += "/job/" + p
-	}
+	jobPath := buildJobPath(jobName)
 	treeParam := fmt.Sprintf(
 		"builds[number,result,fullDisplayName,timestamp,duration,url,building]{0,%d}",
 		limit,
@@ -443,14 +501,17 @@ func (a *Adapter) mapBuild(ctx context.Context, b *gojenkins.Build) *domain.CIRu
 		status = domain.RunStatusAborted
 	}
 
+	upstreamJob, upstreamRunID := extractUpstreamFromBuild(b)
 	return &domain.CIRun{
-		ID:        strconv.FormatInt(b.GetBuildNumber(), 10),
-		Name:      b.Raw.FullDisplayName,
-		Status:    status,
-		Result:    domain.RunResult(b.GetResult()),
-		URL:       b.GetUrl(),
-		StartedAt: b.GetTimestamp(),
-		Duration:  int64(b.GetDuration()),
+		ID:            strconv.FormatInt(b.GetBuildNumber(), 10),
+		Name:          b.Raw.FullDisplayName,
+		Status:        status,
+		Result:        domain.RunResult(b.GetResult()),
+		URL:           b.GetUrl(),
+		StartedAt:     b.GetTimestamp(),
+		Duration:      int64(b.GetDuration()),
+		UpstreamJob:   upstreamJob,
+		UpstreamRunID: upstreamRunID,
 	}
 }
 
@@ -459,11 +520,7 @@ func (a *Adapter) CancelRun(ctx context.Context, jobName string, runID string) e
 		slog.String(adapterdriven.LogKeyID, jobName),
 		slog.String("run_id", runID))
 
-	parts := strings.Split(jobName, "/")
-	var jobPath string
-	for _, p := range parts {
-		jobPath += "/job/" + p
-	}
+	jobPath := buildJobPath(jobName)
 	stopURL := strings.TrimRight(a.baseURL, "/") + jobPath + "/" + runID + "/stop"
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, stopURL, nil)
@@ -514,16 +571,7 @@ type buildWithParams struct {
 		ID       string `json:"id"`
 		FullName string `json:"fullName"`
 	} `json:"culprits"`
-	Actions         []struct {
-		Parameters []struct {
-			Name  string `json:"name"`
-			Value any    `json:"value"`
-		} `json:"parameters"`
-		Causes []struct {
-			UserID   string `json:"userId"`
-			UserName string `json:"userName"`
-		} `json:"causes"`
-	} `json:"actions"`
+	Actions         []buildAction `json:"actions"`
 }
 
 func (a *Adapter) SearchBuilds(ctx context.Context, jobName string, f domain.BuildFilter) ([]domain.CIRun, error) {
@@ -538,16 +586,11 @@ func (a *Adapter) SearchBuilds(ctx context.Context, jobName string, f domain.Bui
 		fetch = 50
 	}
 
-	parts := strings.Split(jobName, "/")
-	var jobPath string
-	for _, p := range parts {
-		jobPath += "/job/" + p
-	}
-
+	jobPath := buildJobPath(jobName)
 	treeParam := fmt.Sprintf(
 		"builds[number,result,fullDisplayName,timestamp,duration,estimatedDuration,url,building,description,"+
 			"culprits[id,fullName],"+
-			"actions[parameters[name,value],causes[userId,userName,shortDescription],text]]{0,%d}",
+			"actions[parameters[name,value],causes[userId,userName,shortDescription,upstreamBuild,upstreamProject],text]]{0,%d}",
 		fetch,
 	)
 	apiURL := strings.TrimRight(a.baseURL, "/") + jobPath + "/api/json?tree=" + treeParam
@@ -644,18 +687,144 @@ func (a *Adapter) SearchBuilds(ctx context.Context, jobName string, f domain.Bui
 			status = domain.RunStatusPending
 		}
 
+		// Orange: warn on malformed upstream causes (project set but build number absent).
+		for _, action := range b.Actions {
+			for _, c := range action.Causes {
+				if c.UpstreamProject != "" && c.UpstreamBuild == 0 {
+					slog.LogAttrs(ctx, slog.LevelWarn, "upstream cause missing build number",
+						slog.String("upstream_project", c.UpstreamProject),
+						slog.Int64("build_number", b.Number))
+				}
+			}
+		}
+		upstreamJob, upstreamRunID := mapCauses(b.Actions)
+		// Yellow: log upstream mapping when present.
+		if upstreamJob != "" {
+			slog.LogAttrs(ctx, slog.LevelDebug, "upstream cause mapped",
+				slog.String("job", jobName),
+				slog.Int64("build", b.Number),
+				slog.String("upstream_job", upstreamJob),
+				slog.String("upstream_run_id", upstreamRunID))
+		}
 		runs = append(runs, domain.CIRun{
-			ID:        strconv.FormatInt(b.Number, 10),
-			Name:      b.FullDisplayName,
-			Status:    status,
-			Result:    domain.RunResult(b.Result),
-			URL:       b.URL,
-			StartedAt: time.UnixMilli(b.Timestamp),
-			Duration:  b.Duration,
+			ID:            strconv.FormatInt(b.Number, 10),
+			Name:          b.FullDisplayName,
+			Status:        status,
+			Result:        domain.RunResult(b.Result),
+			URL:           b.URL,
+			StartedAt:     time.UnixMilli(b.Timestamp),
+			Duration:      b.Duration,
+			UpstreamJob:   upstreamJob,
+			UpstreamRunID: upstreamRunID,
 		})
 	}
 
 	adapterdriven.LogOpDone(ctx, a.name, "search_builds",
+		slog.Duration(adapterdriven.LogKeyElapsed, time.Since(start)),
+		slog.Int(adapterdriven.LogKeyCount, len(runs)))
+	return runs, nil
+}
+
+// GetDownstreamRuns finds builds in downstreamJob that were triggered by
+// upstreamJob#upstreamRunID. Jenkins has no native reverse index, so this
+// fetches recent builds and filters client-side on the upstream cause chain.
+func (a *Adapter) GetDownstreamRuns(ctx context.Context, downstreamJob, upstreamJob, upstreamRunID string) ([]domain.CIRun, error) {
+	start := time.Now()
+	adapterdriven.LogOp(ctx, a.name, "get_downstream_runs",
+		slog.String("downstream_job", downstreamJob),
+		slog.String("upstream_job", upstreamJob),
+		slog.String("upstream_run_id", upstreamRunID))
+
+	parentNum, err := strconv.ParseInt(upstreamRunID, 10, 64)
+	if err != nil {
+		return nil, fmt.Errorf("invalid upstream_run_id %q: %w", upstreamRunID, err)
+	}
+
+	jobPath := buildJobPath(downstreamJob)
+	const treeParam = "builds[number,result,fullDisplayName,timestamp,duration,url,building," +
+		"actions[causes[upstreamBuild,upstreamProject]]]{0,50}"
+	apiURL := strings.TrimRight(a.baseURL, "/") + jobPath + "/api/json?tree=" + treeParam
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.SetBasicAuth(a.user, a.token)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		adapterdriven.LogError(ctx, a.name, "get_downstream_runs", err)
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		// Orange: non-200 from Jenkins.
+		apiErr := fmt.Errorf("%w: %s (HTTP %d)", ErrJobNotFound, downstreamJob, resp.StatusCode)
+		adapterdriven.LogError(ctx, a.name, "get_downstream_runs", apiErr)
+		return nil, apiErr
+	}
+
+	var payload struct {
+		Builds []struct {
+			Number          int64         `json:"number"`
+			Result          string        `json:"result"`
+			FullDisplayName string        `json:"fullDisplayName"`
+			Timestamp       int64         `json:"timestamp"`
+			Duration        int64         `json:"duration"`
+			URL             string        `json:"url"`
+			Building        bool          `json:"building"`
+			Actions         []buildAction `json:"actions"`
+		} `json:"builds"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		adapterdriven.LogError(ctx, a.name, "get_downstream_runs", err)
+		return nil, fmt.Errorf("get_downstream_runs decode: %w", err)
+	}
+
+	var runs []domain.CIRun
+	for _, b := range payload.Builds {
+		// Filter client-side: keep builds whose cause chain references the parent.
+		matched := false
+		for _, action := range b.Actions {
+			for _, c := range action.Causes {
+				if strings.EqualFold(c.UpstreamProject, upstreamJob) && c.UpstreamBuild == parentNum {
+					matched = true
+				}
+			}
+		}
+		if !matched {
+			continue
+		}
+
+		status := domain.RunStatusSuccess
+		switch {
+		case b.Building:
+			status = domain.RunStatusRunning
+		case b.Result == "FAILURE":
+			status = domain.RunStatusFailure
+		case b.Result == "ABORTED":
+			status = domain.RunStatusAborted
+		case b.Result == "":
+			status = domain.RunStatusPending
+		}
+
+		uj, uri := mapCauses(b.Actions)
+		runs = append(runs, domain.CIRun{
+			ID:            strconv.FormatInt(b.Number, 10),
+			Name:          b.FullDisplayName,
+			Status:        status,
+			Result:        domain.RunResult(b.Result),
+			URL:           b.URL,
+			StartedAt:     time.UnixMilli(b.Timestamp),
+			Duration:      b.Duration,
+			UpstreamJob:   uj,
+			UpstreamRunID: uri,
+		})
+	}
+
+	// Yellow: success signal with result count.
+	adapterdriven.LogOpDone(ctx, a.name, "get_downstream_runs",
 		slog.Duration(adapterdriven.LogKeyElapsed, time.Since(start)),
 		slog.Int(adapterdriven.LogKeyCount, len(runs)))
 	return runs, nil

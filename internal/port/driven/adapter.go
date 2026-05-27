@@ -21,4 +21,5 @@ type CIAdapter interface {
 	GetArtifact(ctx context.Context, jobName string, runID string, path string) ([]byte, error)
 	GetEstimatedDuration(ctx context.Context, jobName string) (int64, error)
 	CancelRun(ctx context.Context, jobName string, runID string) error
+	GetDownstreamRuns(ctx context.Context, downstreamJob, upstreamJob, upstreamRunID string) ([]domain.CIRun, error)
 }

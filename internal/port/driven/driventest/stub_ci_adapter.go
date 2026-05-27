@@ -52,8 +52,9 @@ type StubCIAdapter struct {
 	Artifact          []byte
 	BuildParams       map[string]string
 	Builds            []domain.CIRun
-	EstimatedDuration int64
-	Err               error
+	EstimatedDuration   int64
+	DownstreamRuns      []domain.CIRun
+	Err                 error
 
 	TriggerRunErr    error
 	PollRunErr       error
@@ -63,7 +64,8 @@ type StubCIAdapter struct {
 	GetBuildParamsErr error
 	ListBuildsErr    error
 	ListArtifactsErr error
-	GetArtifactErr   error
+	GetArtifactErr        error
+	GetDownstreamRunsErr  error
 
 	mu                 sync.Mutex
 	TriggerRunCalls    []TriggerRunCall
@@ -189,6 +191,13 @@ func (s *StubCIAdapter) ListArtifacts(_ context.Context, jobName, runID string) 
 }
 
 func (s *StubCIAdapter) CancelRun(_ context.Context, _, _ string) error { return s.Err }
+
+func (s *StubCIAdapter) GetDownstreamRuns(_ context.Context, _, _, _ string) ([]domain.CIRun, error) {
+	if s.GetDownstreamRunsErr != nil {
+		return nil, s.GetDownstreamRunsErr
+	}
+	return s.DownstreamRuns, nil
+}
 
 func (s *StubCIAdapter) GetArtifact(_ context.Context, jobName, runID, path string) ([]byte, error) {
 	s.mu.Lock()

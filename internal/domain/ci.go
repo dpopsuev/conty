@@ -39,13 +39,15 @@ type LogResult struct {
 }
 
 type CIRun struct {
-	ID        string    `json:"id"`
-	Name      string    `json:"name"`
-	Status    RunStatus `json:"status"`
-	Result    RunResult `json:"result,omitempty"`
-	URL       string    `json:"url,omitempty"`
-	StartedAt time.Time `json:"started_at"`
-	Duration  int64     `json:"duration,omitempty"`
+	ID            string    `json:"id"`
+	Name          string    `json:"name"`
+	Status        RunStatus `json:"status"`
+	Result        RunResult `json:"result,omitempty"`
+	URL           string    `json:"url,omitempty"`
+	StartedAt     time.Time `json:"started_at"`
+	Duration      int64     `json:"duration,omitempty"`
+	UpstreamJob   string    `json:"upstream_job,omitempty"`
+	UpstreamRunID string    `json:"upstream_run_id,omitempty"`
 }
 
 type CIJob struct {

@@ -31,6 +31,8 @@ type CIMonitorService interface {
 	CIArtifactText(ctx context.Context, backend, jobRef, runID, path string, f domain.LogFilter) (domain.LogResult, error)
 	CIParamsTruncated(ctx context.Context, backend, jobRef, runID string) (map[string]string, []string, error)
 	CICancel(ctx context.Context, backend, jobRef, runID string) error
+	CIGetRun(ctx context.Context, backend, jobRef, runID string) (*domain.CIRun, error)
+	CIDownstream(ctx context.Context, backend, downstreamJob, upstreamJob, upstreamRunID string) ([]domain.CIRun, error)
 	OwnsRun(backend, buildNumber string) bool
 	ListOwnedRuns() []domain.OwnedRun
 	BackendInfo() []domain.BackendInfo

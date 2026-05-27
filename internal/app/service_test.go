@@ -555,6 +555,95 @@ func TestCILog_TailTruncation(t *testing.T) {
 	}
 }
 
+func TestCIGetRun_ReturnsRunWithUpstreamFields(t *testing.T) {
+	stub := stubAdapter()
+	stub.Run = &domain.CIRun{
+		ID:            "6527",
+		Status:        domain.RunStatusFailure,
+		UpstreamJob:   "CI/far-edge-vran-deployment",
+		UpstreamRunID: "17913",
+	}
+	svc := app.NewService(stub)
+
+	run, err := svc.CIGetRun(context.Background(), "test", "ocp-far-edge-vran-tests", "6527")
+	if err != nil {
+		t.Fatalf("CIGetRun: %v", err)
+	}
+	if run.ID != "6527" {
+		t.Errorf("ID = %q, want 6527", run.ID)
+	}
+	if run.UpstreamJob != "CI/far-edge-vran-deployment" {
+		t.Errorf("UpstreamJob = %q, want CI/far-edge-vran-deployment", run.UpstreamJob)
+	}
+	if run.UpstreamRunID != "17913" {
+		t.Errorf("UpstreamRunID = %q, want 17913", run.UpstreamRunID)
+	}
+}
+
+func TestCIGetRun_BackendNotFound(t *testing.T) {
+	svc := app.NewService()
+	_, err := svc.CIGetRun(context.Background(), "nonexistent", "job", "1")
+	if !errors.Is(err, app.ErrBackendNotFound) {
+		t.Errorf("err = %v, want ErrBackendNotFound", err)
+	}
+}
+
+func TestCIDownstream_ReturnsMatchingRuns(t *testing.T) {
+	stub := stubAdapter()
+	stub.DownstreamRuns = []domain.CIRun{
+		{ID: "6527", UpstreamJob: "CI/far-edge-vran-deployment", UpstreamRunID: "17913"},
+	}
+	svc := app.NewService(stub)
+
+	runs, err := svc.CIDownstream(context.Background(), "test",
+		"ocp-far-edge-vran-tests", "CI/far-edge-vran-deployment", "17913")
+	if err != nil {
+		t.Fatalf("CIDownstream: %v", err)
+	}
+	if len(runs) != 1 {
+		t.Fatalf("expected 1 run, got %d", len(runs))
+	}
+	if runs[0].ID != "6527" {
+		t.Errorf("run ID = %q, want 6527", runs[0].ID)
+	}
+}
+
+func TestCIDownstream_EmptyResult(t *testing.T) {
+	stub := stubAdapter()
+	stub.DownstreamRuns = nil
+	svc := app.NewService(stub)
+
+	runs, err := svc.CIDownstream(context.Background(), "test",
+		"ocp-far-edge-vran-tests", "CI/far-edge-vran-deployment", "99999")
+	if err != nil {
+		t.Fatalf("CIDownstream: %v", err)
+	}
+	if len(runs) != 0 {
+		t.Errorf("expected 0 runs, got %d", len(runs))
+	}
+}
+
+func TestCIDownstream_PropagatesAdapterError(t *testing.T) {
+	stub := stubAdapter()
+	stub.GetDownstreamRunsErr = errors.New("jenkins unavailable")
+	svc := app.NewService(stub)
+
+	_, err := svc.CIDownstream(context.Background(), "test",
+		"ocp-far-edge-vran-tests", "CI/far-edge-vran-deployment", "17913")
+	if err == nil {
+		t.Fatal("expected error from CIDownstream when adapter fails")
+	}
+}
+
+func TestCIDownstream_BackendNotFound(t *testing.T) {
+	svc := app.NewService()
+	_, err := svc.CIDownstream(context.Background(), "nonexistent",
+		"downstream-job", "upstream-job", "1")
+	if !errors.Is(err, app.ErrBackendNotFound) {
+		t.Errorf("err = %v, want ErrBackendNotFound", err)
+	}
+}
+
 func TestCILog_GrepFilter(t *testing.T) {
 	raw := "INFO: starting\nERROR: something broke\nINFO: done"
 	stub := stubAdapter()

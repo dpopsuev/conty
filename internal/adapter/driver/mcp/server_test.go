@@ -177,6 +177,151 @@ func TestServeHTTP_StaleSessionIDIgnored(t *testing.T) {
 	}
 }
 
+// newSession builds an in-process MCP session backed by the given stub adapter.
+func newSession(t *testing.T, stub *driventest.StubCIAdapter) *sdkmcp.ClientSession {
+	t.Helper()
+	svc := app.NewService(stub)
+	srv := contymcp.NewBatteryServer(svc)
+	serverTransport, clientTransport := sdkmcp.NewInMemoryTransports()
+	ctx := context.Background()
+	go func() { _ = srv.Serve(ctx, serverTransport) }()
+	client := sdkmcp.NewClient(&sdkmcp.Implementation{Name: "test-client", Version: "0.0.1"}, nil)
+	session, err := client.Connect(ctx, clientTransport, nil)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	t.Cleanup(func() { _ = session.Close() })
+	return session
+}
+
+func TestUpstreamAction_ReturnsUpstreamFields(t *testing.T) {
+	stub := driventest.NewStubCIAdapter("test")
+	stub.Run = &domain.CIRun{
+		ID:            "6527",
+		Status:        domain.RunStatusSuccess,
+		UpstreamJob:   "CI/far-edge-vran-deployment",
+		UpstreamRunID: "17913",
+	}
+	session := newSession(t, stub)
+
+	result := callTool(t, session, map[string]any{
+		"action":  "upstream",
+		"backend": "test",
+		"job_ref": "ocp-far-edge-vran-tests",
+		"run_id":  "6527",
+	})
+	text := getText(t, result)
+	var obj map[string]any
+	if err := json.Unmarshal([]byte(text), &obj); err != nil {
+		t.Fatalf("not JSON: %v\n%s", err, text)
+	}
+	if obj["upstream_job"] != "CI/far-edge-vran-deployment" {
+		t.Errorf("upstream_job = %v, want CI/far-edge-vran-deployment", obj["upstream_job"])
+	}
+	if obj["upstream_run_id"] != "17913" {
+		t.Errorf("upstream_run_id = %v, want 17913", obj["upstream_run_id"])
+	}
+}
+
+func TestUpstreamAction_NoUpstreamCause(t *testing.T) {
+	stub := driventest.NewStubCIAdapter("test")
+	stub.Run = &domain.CIRun{ID: "100", Status: domain.RunStatusSuccess} // no upstream fields
+	session := newSession(t, stub)
+
+	result, err := session.CallTool(context.Background(), &sdkmcp.CallToolParams{
+		Name: "conty",
+		Arguments: map[string]any{
+			"action":  "upstream",
+			"backend": "test",
+			"job_ref": "some-job",
+			"run_id":  "100",
+		},
+	})
+	if err != nil {
+		t.Fatalf("CallTool: %v", err)
+	}
+	if !result.IsError {
+		t.Errorf("expected IsError=true for build with no upstream cause")
+	}
+}
+
+func TestUpstreamAction_MissingRunID(t *testing.T) {
+	session := setupServer(t)
+	result, err := session.CallTool(context.Background(), &sdkmcp.CallToolParams{
+		Name:      "conty",
+		Arguments: map[string]any{"action": "upstream", "backend": "test", "job_ref": "job"},
+	})
+	if err != nil {
+		t.Fatalf("CallTool: %v", err)
+	}
+	if !result.IsError {
+		t.Errorf("expected IsError=true for missing run_id")
+	}
+}
+
+func TestDownstreamAction_ReturnsBuilds(t *testing.T) {
+	stub := driventest.NewStubCIAdapter("test")
+	stub.DownstreamRuns = []domain.CIRun{
+		{ID: "6527", Status: domain.RunStatusSuccess},
+	}
+	session := newSession(t, stub)
+
+	result := callTool(t, session, map[string]any{
+		"action":         "downstream",
+		"backend":        "test",
+		"job_ref":        "CI/far-edge-vran-deployment",
+		"run_id":         "17913",
+		"downstream_job": "ocp-far-edge-vran-tests",
+	})
+	text := getText(t, result)
+	var obj map[string]any
+	if err := json.Unmarshal([]byte(text), &obj); err != nil {
+		t.Fatalf("not JSON: %v\n%s", err, text)
+	}
+	builds, ok := obj["builds"].([]any)
+	if !ok {
+		t.Fatalf("missing or wrong type for builds key: %s", text)
+	}
+	if len(builds) != 1 {
+		t.Errorf("expected 1 build, got %d", len(builds))
+	}
+}
+
+func TestDownstreamAction_MissingDownstreamJob(t *testing.T) {
+	session := setupServer(t)
+	result, err := session.CallTool(context.Background(), &sdkmcp.CallToolParams{
+		Name: "conty",
+		Arguments: map[string]any{
+			"action":  "downstream",
+			"backend": "test",
+			"job_ref": "CI/far-edge-vran-deployment",
+			"run_id":  "17913",
+			// downstream_job intentionally omitted
+		},
+	})
+	if err != nil {
+		t.Fatalf("CallTool: %v", err)
+	}
+	if !result.IsError {
+		t.Errorf("expected IsError=true for missing downstream_job")
+	}
+	text := result.Content[0].(*sdkmcp.TextContent).Text
+	if !strings.Contains(text, "downstream_job") {
+		t.Errorf("error message should mention downstream_job, got: %s", text)
+	}
+}
+
+func TestHelp_ListsUpstreamDownstreamActions(t *testing.T) {
+	session := setupServer(t)
+	result := callTool(t, session, map[string]any{"action": "help"})
+	text := getText(t, result)
+	for _, want := range []string{"upstream", "downstream"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("help output missing action %q", want)
+		}
+	}
+}
+
 func TestSearch_OwnedReturnsList(t *testing.T) {
 	session := setupServer(t)
 	result := callTool(t, session, map[string]any{"action": "search", "owned": true})
