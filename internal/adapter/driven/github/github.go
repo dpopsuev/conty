@@ -9,7 +9,9 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	adapterdriven "github.com/dpopsuev/conty/internal/adapter/driven"
@@ -22,7 +24,12 @@ const (
 	BackendName = "github"
 )
 
-var _ driven.CIAdapter = (*Adapter)(nil)
+// compile-time assertions — GitHub does NOT implement CIChainable.
+var _ driven.CICore         = (*Adapter)(nil)
+var _ driven.CITriggerable  = (*Adapter)(nil)
+var _ driven.CIHistorical   = (*Adapter)(nil)
+var _ driven.CIPipeliner    = (*Adapter)(nil)
+var _ driven.CIArtifactStore = (*Adapter)(nil)
 
 var (
 	ErrOwnerRequired = errors.New("repository owner is required")
@@ -60,40 +67,15 @@ func New(name, token, owner, repo string) (*Adapter, error) {
 
 func (a *Adapter) Name() string { return a.name }
 func (a *Adapter) Type() string { return BackendName }
-
-func (a *Adapter) TriggerRun(ctx context.Context, jobName string, params map[string]string) (string, error) {
-	if a.token == "" {
-		return "", ErrAuthRequired
-	}
-	start := time.Now()
-	adapterdriven.LogOp(ctx, a.name, "trigger_run", slog.String(adapterdriven.LogKeyID, jobName))
-
-	body := map[string]any{"ref": "main"}
-	if params != nil {
-		inputs := make(map[string]string, len(params))
-		for k, v := range params {
-			inputs[k] = v
-		}
-		body["inputs"] = inputs
-		if ref, ok := params["ref"]; ok {
-			body["ref"] = ref
-		}
-	}
-
-	path := fmt.Sprintf("/repos/%s/%s/actions/workflows/%s/dispatches", a.owner, a.repo, jobName)
-	if err := a.api(ctx, http.MethodPost, path, body, nil); err != nil {
-		adapterdriven.LogError(ctx, a.name, "trigger_run", err)
-		return "", err
-	}
-
-	adapterdriven.LogOpDone(ctx, a.name, "trigger_run",
-		slog.Duration(adapterdriven.LogKeyElapsed, time.Since(start)))
-	return "dispatched", nil
+func (a *Adapter) Capabilities() driven.CapabilitySet {
+	return driven.CapTrigger | driven.CapHistory | driven.CapStages | driven.CapArtifacts
 }
 
-func (a *Adapter) PollRun(ctx context.Context, jobName string, runID string) (*domain.CIRun, error) {
+// ── CICore ────────────────────────────────────────────────────────────────────
+
+func (a *Adapter) GetRun(ctx context.Context, jobName string, runID string) (*domain.CIRun, error) {
 	start := time.Now()
-	adapterdriven.LogOp(ctx, a.name, "poll_run",
+	adapterdriven.LogOp(ctx, a.name, "get_run",
 		slog.String(adapterdriven.LogKeyID, jobName),
 		slog.String("run_id", runID))
 
@@ -104,14 +86,14 @@ func (a *Adapter) PollRun(ctx context.Context, jobName string, runID string) (*d
 			WorkflowRuns []ghWorkflowRun `json:"workflow_runs"`
 		}
 		if err := a.api(ctx, http.MethodGet, path, nil, &resp); err != nil {
-			adapterdriven.LogError(ctx, a.name, "poll_run", err)
+			adapterdriven.LogError(ctx, a.name, "get_run", err)
 			return nil, err
 		}
 		if len(resp.WorkflowRuns) == 0 {
 			return nil, fmt.Errorf("%w: no runs found", ErrNotFound)
 		}
 		run := resp.WorkflowRuns[0].toCIRun()
-		adapterdriven.LogOpDone(ctx, a.name, "poll_run",
+		adapterdriven.LogOpDone(ctx, a.name, "get_run",
 			slog.Duration(adapterdriven.LogKeyElapsed, time.Since(start)))
 		return &run, nil
 	}
@@ -119,44 +101,70 @@ func (a *Adapter) PollRun(ctx context.Context, jobName string, runID string) (*d
 	path = fmt.Sprintf("/repos/%s/%s/actions/runs/%s", a.owner, a.repo, runID)
 	var resp ghWorkflowRun
 	if err := a.api(ctx, http.MethodGet, path, nil, &resp); err != nil {
-		adapterdriven.LogError(ctx, a.name, "poll_run", err)
+		adapterdriven.LogError(ctx, a.name, "get_run", err)
 		return nil, err
 	}
 	run := resp.toCIRun()
-	adapterdriven.LogOpDone(ctx, a.name, "poll_run",
+	adapterdriven.LogOpDone(ctx, a.name, "get_run",
 		slog.Duration(adapterdriven.LogKeyElapsed, time.Since(start)))
 	return &run, nil
 }
 
-func (a *Adapter) ListJobs(ctx context.Context, _ string, runID string) ([]domain.CIJob, error) {
+func (a *Adapter) SearchRuns(ctx context.Context, _ string, f domain.BuildFilter) ([]domain.CIRun, error) {
 	start := time.Now()
-	adapterdriven.LogOp(ctx, a.name, "list_jobs", slog.String("run_id", runID))
+	adapterdriven.LogOp(ctx, a.name, "search_runs")
 
-	path := fmt.Sprintf("/repos/%s/%s/actions/runs/%s/jobs", a.owner, a.repo, runID)
+	limit := f.Limit
+	if limit <= 0 {
+		limit = 20
+	}
+	fetch := limit * 3
+	if fetch < 50 {
+		fetch = 50
+	}
+
+	params := url.Values{}
+	params.Set("per_page", strconv.Itoa(fetch))
+	if f.Result != "" {
+		params.Set("status", mapResultToGHStatus(f.Result))
+	}
+	if f.Runner != "" {
+		params.Set("actor", f.Runner)
+	}
+
+	path := fmt.Sprintf("/repos/%s/%s/actions/runs?%s", a.owner, a.repo, params.Encode())
 	var resp struct {
-		Jobs []ghWorkflowJob `json:"jobs"`
+		WorkflowRuns []ghWorkflowRun `json:"workflow_runs"`
 	}
 	if err := a.api(ctx, http.MethodGet, path, nil, &resp); err != nil {
-		adapterdriven.LogError(ctx, a.name, "list_jobs", err)
+		adapterdriven.LogError(ctx, a.name, "search_runs", err)
 		return nil, err
 	}
 
-	jobs := make([]domain.CIJob, len(resp.Jobs))
-	for i := range resp.Jobs {
-		jobs[i] = resp.Jobs[i].toCIJob()
+	var runs []domain.CIRun
+	for _, wr := range resp.WorkflowRuns {
+		if len(runs) >= limit {
+			break
+		}
+		run := wr.toCIRun()
+		if !f.Since.IsZero() && run.StartedAt.Before(f.Since) {
+			continue
+		}
+		runs = append(runs, run)
 	}
-	adapterdriven.LogOpDone(ctx, a.name, "list_jobs",
+
+	adapterdriven.LogOpDone(ctx, a.name, "search_runs",
 		slog.Duration(adapterdriven.LogKeyElapsed, time.Since(start)),
-		slog.Int(adapterdriven.LogKeyCount, len(jobs)))
-	return jobs, nil
+		slog.Int(adapterdriven.LogKeyCount, len(runs)))
+	return runs, nil
 }
 
-func (a *Adapter) GetJobLog(ctx context.Context, _ string, runID string) (string, error) {
+func (a *Adapter) GetLog(ctx context.Context, _ string, runID string, _ domain.LogFilter) (string, error) {
 	start := time.Now()
-	adapterdriven.LogOp(ctx, a.name, "get_job_log", slog.String("run_id", runID))
+	adapterdriven.LogOp(ctx, a.name, "get_log", slog.String("run_id", runID))
 
-	url := fmt.Sprintf("%s/repos/%s/%s/actions/runs/%s/logs", a.baseURL, a.owner, a.repo, runID)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, http.NoBody)
+	logURL := fmt.Sprintf("%s/repos/%s/%s/actions/runs/%s/logs", a.baseURL, a.owner, a.repo, runID)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, logURL, http.NoBody)
 	if err != nil {
 		return "", err
 	}
@@ -167,7 +175,7 @@ func (a *Adapter) GetJobLog(ctx context.Context, _ string, runID string) (string
 
 	resp, err := a.client.Do(req)
 	if err != nil {
-		adapterdriven.LogError(ctx, a.name, "get_job_log", err)
+		adapterdriven.LogError(ctx, a.name, "get_log", err)
 		return "", err
 	}
 	defer resp.Body.Close()
@@ -181,10 +189,143 @@ func (a *Adapter) GetJobLog(ctx context.Context, _ string, runID string) (string
 	if err != nil {
 		return "", fmt.Errorf("read logs: %w", err)
 	}
-	adapterdriven.LogOpDone(ctx, a.name, "get_job_log",
+	adapterdriven.LogOpDone(ctx, a.name, "get_log",
 		slog.Duration(adapterdriven.LogKeyElapsed, time.Since(start)))
 	return string(data), nil
 }
+
+func (a *Adapter) CancelRun(ctx context.Context, _ string, runID string) error {
+	path := fmt.Sprintf("/repos/%s/%s/actions/runs/%s/cancel", a.owner, a.repo, runID)
+	return a.api(ctx, http.MethodPost, path, nil, nil)
+}
+
+// ── CITriggerable ─────────────────────────────────────────────────────────────
+
+func (a *Adapter) Trigger(ctx context.Context, jobRef string, params map[string]string) (*domain.TriggerReceipt, error) {
+	if a.token == "" {
+		return nil, ErrAuthRequired
+	}
+	start := time.Now()
+	adapterdriven.LogOp(ctx, a.name, "trigger", slog.String(adapterdriven.LogKeyID, jobRef))
+
+	body := map[string]any{"ref": "main"}
+	if params != nil {
+		inputs := make(map[string]string, len(params))
+		for k, v := range params {
+			inputs[k] = v
+		}
+		body["inputs"] = inputs
+		if ref, ok := params["ref"]; ok {
+			body["ref"] = ref
+		}
+	}
+
+	dispatchedAt := time.Now().UTC()
+	path := fmt.Sprintf("/repos/%s/%s/actions/workflows/%s/dispatches", a.owner, a.repo, jobRef)
+	if err := a.api(ctx, http.MethodPost, path, body, nil); err != nil {
+		adapterdriven.LogError(ctx, a.name, "trigger", err)
+		return nil, err
+	}
+
+	adapterdriven.LogOpDone(ctx, a.name, "trigger",
+		slog.Duration(adapterdriven.LogKeyElapsed, time.Since(start)))
+	return &domain.TriggerReceipt{
+		OpaqueRef:    dispatchedAt.Format(time.RFC3339),
+		NeedsResolve: true,
+		Backend:      a.name,
+		JobRef:       jobRef,
+	}, nil
+}
+
+// ResolveReceipt polls for a workflow run created after the dispatch timestamp
+// encoded in r.OpaqueRef. Returns the same receipt (NeedsResolve=true) when
+// no matching run is found yet.
+func (a *Adapter) ResolveReceipt(ctx context.Context, r *domain.TriggerReceipt) (*domain.TriggerReceipt, error) {
+	since, err := time.Parse(time.RFC3339, r.OpaqueRef)
+	if err != nil {
+		// Orange: malformed OpaqueRef — log and treat as unresolved
+		slog.LogAttrs(ctx, slog.LevelWarn, "github resolve_receipt: malformed opaque_ref",
+			slog.String("opaque_ref", r.OpaqueRef),
+			slog.String("error", err.Error()))
+		return r, nil
+	}
+
+	path := fmt.Sprintf("/repos/%s/%s/actions/runs?event=workflow_dispatch&per_page=10", a.owner, a.repo)
+	var resp struct {
+		WorkflowRuns []ghWorkflowRun `json:"workflow_runs"`
+	}
+	if err := a.api(ctx, http.MethodGet, path, nil, &resp); err != nil {
+		return r, err
+	}
+
+	for _, run := range resp.WorkflowRuns {
+		created, _ := time.Parse(time.RFC3339, run.CreatedAt)
+		if created.After(since.Add(-5 * time.Second)) {
+			resolved := *r
+			resolved.RunID = strconv.FormatInt(run.ID, 10)
+			resolved.NeedsResolve = false
+			slog.LogAttrs(ctx, slog.LevelDebug, "github receipt resolved",
+				slog.String("run_id", resolved.RunID))
+			return &resolved, nil
+		}
+	}
+	return r, nil // not yet available
+}
+
+func (a *Adapter) EstimateDuration(_ context.Context, _ string) (int64, error) {
+	return 0, nil // GitHub Actions does not expose estimated duration
+}
+
+// ── CIHistorical ──────────────────────────────────────────────────────────────
+
+func (a *Adapter) ListRuns(ctx context.Context, _ string, limit int) ([]domain.CIRun, error) {
+	if limit <= 0 {
+		limit = 10
+	}
+	path := fmt.Sprintf("/repos/%s/%s/actions/runs?per_page=%d", a.owner, a.repo, limit)
+	var resp struct {
+		WorkflowRuns []ghWorkflowRun `json:"workflow_runs"`
+	}
+	if err := a.api(ctx, http.MethodGet, path, nil, &resp); err != nil {
+		return nil, err
+	}
+	runs := make([]domain.CIRun, len(resp.WorkflowRuns))
+	for i := range resp.WorkflowRuns {
+		runs[i] = resp.WorkflowRuns[i].toCIRun()
+	}
+	return runs, nil
+}
+
+func (a *Adapter) GetRunParams(_ context.Context, _, _ string) (map[string]string, error) {
+	return nil, fmt.Errorf("%w: GitHub Actions workflow inputs not yet supported", ErrNotFound)
+}
+
+// ── CIPipeliner ───────────────────────────────────────────────────────────────
+
+func (a *Adapter) ListStages(ctx context.Context, _ string, runID string) ([]domain.CIJob, error) {
+	start := time.Now()
+	adapterdriven.LogOp(ctx, a.name, "list_stages", slog.String("run_id", runID))
+
+	path := fmt.Sprintf("/repos/%s/%s/actions/runs/%s/jobs", a.owner, a.repo, runID)
+	var resp struct {
+		Jobs []ghWorkflowJob `json:"jobs"`
+	}
+	if err := a.api(ctx, http.MethodGet, path, nil, &resp); err != nil {
+		adapterdriven.LogError(ctx, a.name, "list_stages", err)
+		return nil, err
+	}
+
+	jobs := make([]domain.CIJob, len(resp.Jobs))
+	for i := range resp.Jobs {
+		jobs[i] = resp.Jobs[i].toCIJob()
+	}
+	adapterdriven.LogOpDone(ctx, a.name, "list_stages",
+		slog.Duration(adapterdriven.LogKeyElapsed, time.Since(start)),
+		slog.Int(adapterdriven.LogKeyCount, len(jobs)))
+	return jobs, nil
+}
+
+// ── CIArtifactStore ───────────────────────────────────────────────────────────
 
 func (a *Adapter) ListArtifacts(ctx context.Context, _ string, runID string) ([]domain.CIArtifact, error) {
 	start := time.Now()
@@ -217,8 +358,8 @@ func (a *Adapter) GetArtifact(ctx context.Context, _ string, _ string, path stri
 	start := time.Now()
 	adapterdriven.LogOp(ctx, a.name, "get_artifact", slog.String("path", path))
 
-	url := fmt.Sprintf("%s/repos/%s/%s/actions/artifacts/%s/zip", a.baseURL, a.owner, a.repo, path)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, http.NoBody)
+	artifactURL := fmt.Sprintf("%s/repos/%s/%s/actions/artifacts/%s/zip", a.baseURL, a.owner, a.repo, path)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, artifactURL, http.NoBody)
 	if err != nil {
 		return nil, err
 	}
@@ -250,35 +391,7 @@ func (a *Adapter) GetArtifact(ctx context.Context, _ string, _ string, path stri
 	return data, nil
 }
 
-func (a *Adapter) GetEstimatedDuration(_ context.Context, _ string) (int64, error) {
-	return 0, nil
-}
-
-func (a *Adapter) PollQueue(_ context.Context, _ string) (string, error) {
-	return "", fmt.Errorf("%w: GitHub Actions uses run IDs, not queue IDs", ErrNotFound)
-}
-
-func (a *Adapter) GetBuildParams(_ context.Context, _, _ string) (map[string]string, error) {
-	return nil, fmt.Errorf("%w: GitHub Actions workflow inputs not yet supported", ErrNotFound)
-}
-
-func (a *Adapter) ListBuilds(ctx context.Context, _ string, limit int) ([]domain.CIRun, error) {
-	if limit <= 0 {
-		limit = 10
-	}
-	path := fmt.Sprintf("/repos/%s/%s/actions/runs?per_page=%d", a.owner, a.repo, limit)
-	var resp struct {
-		WorkflowRuns []ghWorkflowRun `json:"workflow_runs"`
-	}
-	if err := a.api(ctx, http.MethodGet, path, nil, &resp); err != nil {
-		return nil, err
-	}
-	runs := make([]domain.CIRun, len(resp.WorkflowRuns))
-	for i := range resp.WorkflowRuns {
-		runs[i] = resp.WorkflowRuns[i].toCIRun()
-	}
-	return runs, nil
-}
+// ── HTTP helper ───────────────────────────────────────────────────────────────
 
 func (a *Adapter) api(ctx context.Context, method, path string, body, result any) error {
 	var bodyReader io.Reader
@@ -339,6 +452,8 @@ func (a *Adapter) api(ctx context.Context, method, path string, body, result any
 	}
 	return nil
 }
+
+// ── Response types ────────────────────────────────────────────────────────────
 
 type ghWorkflowRun struct {
 	ID         int64  `json:"id"`
@@ -420,13 +535,15 @@ func mapGHResult(conclusion string) domain.RunResult {
 	}
 }
 
-
-func (a *Adapter) CancelRun(_ context.Context, _, _ string) error { return nil }
-
-func (a *Adapter) GetDownstreamRuns(_ context.Context, _, _, _ string) ([]domain.CIRun, error) {
-	return nil, nil
-}
-
-func (a *Adapter) SearchBuilds(ctx context.Context, jobName string, f domain.BuildFilter) ([]domain.CIRun, error) {
-	return nil, fmt.Errorf("SearchBuilds not supported for GitHub Actions backend")
+func mapResultToGHStatus(result string) string {
+	switch strings.ToUpper(result) {
+	case "SUCCESS":
+		return "success"
+	case "FAILURE":
+		return "failure"
+	case "ABORTED":
+		return "cancelled"
+	default:
+		return ""
+	}
 }

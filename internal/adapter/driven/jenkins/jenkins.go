@@ -20,7 +20,12 @@ import (
 
 const BackendName = "jenkins"
 
-var _ driven.CIAdapter = (*Adapter)(nil)
+var _ driven.CICore         = (*Adapter)(nil)
+var _ driven.CITriggerable  = (*Adapter)(nil)
+var _ driven.CIHistorical   = (*Adapter)(nil)
+var _ driven.CIPipeliner    = (*Adapter)(nil)
+var _ driven.CIArtifactStore = (*Adapter)(nil)
+var _ driven.CIChainable    = (*Adapter)(nil)
 
 var (
 	ErrJobNotFound      = errors.New("job not found")
@@ -47,31 +52,65 @@ func New(ctx context.Context, name, baseURL, user, token string) (*Adapter, erro
 func (a *Adapter) Name() string { return a.name }
 func (a *Adapter) Type() string { return BackendName }
 
-func (a *Adapter) TriggerRun(ctx context.Context, jobName string, params map[string]string) (string, error) {
+func (a *Adapter) Capabilities() driven.CapabilitySet {
+	return driven.CapTrigger | driven.CapHistory | driven.CapStages | driven.CapArtifacts | driven.CapChain
+}
+
+func (a *Adapter) Trigger(ctx context.Context, jobName string, params map[string]string) (*domain.TriggerReceipt, error) {
 	start := time.Now()
-	adapterdriven.LogOp(ctx, a.name, "trigger_run", slog.String(adapterdriven.LogKeyID, jobName))
+	adapterdriven.LogOp(ctx, a.name, "trigger", slog.String(adapterdriven.LogKeyID, jobName))
 
 	queueID, err := a.jenkins.BuildJob(ctx, jobName, params)
 	if err != nil {
-		adapterdriven.LogError(ctx, a.name, "trigger_run", err)
-		return "", err
+		adapterdriven.LogError(ctx, a.name, "trigger", err)
+		return nil, err
 	}
 
-	adapterdriven.LogOpDone(ctx, a.name, "trigger_run",
+	adapterdriven.LogOpDone(ctx, a.name, "trigger",
 		slog.Duration(adapterdriven.LogKeyElapsed, time.Since(start)),
 		slog.Int64("queue_id", queueID))
-	return strconv.FormatInt(queueID, 10), nil
+	return &domain.TriggerReceipt{
+		OpaqueRef:    strconv.FormatInt(queueID, 10),
+		NeedsResolve: true,
+		Backend:      a.name,
+		JobRef:       jobName,
+	}, nil
 }
 
-func (a *Adapter) PollRun(ctx context.Context, jobName string, runID string) (*domain.CIRun, error) {
+func (a *Adapter) ResolveReceipt(ctx context.Context, r *domain.TriggerReceipt) (*domain.TriggerReceipt, error) {
+	resolved := *r
+	buildNum, err := a.PollQueue(ctx, r.OpaqueRef)
+	if err != nil {
+		return &resolved, err
+	}
+	if buildNum != "" {
+		resolved.RunID = buildNum
+		resolved.NeedsResolve = false
+	}
+	return &resolved, nil
+}
+
+func (a *Adapter) EstimateDuration(ctx context.Context, jobName string) (int64, error) {
+	j, err := a.getJob(ctx, jobName)
+	if err != nil {
+		return 0, err
+	}
+	b, err := j.GetLastBuild(ctx)
+	if err != nil {
+		return 0, nil
+	}
+	return int64(b.Raw.EstimatedDuration), nil
+}
+
+func (a *Adapter) GetRun(ctx context.Context, jobName string, runID string) (*domain.CIRun, error) {
 	start := time.Now()
-	adapterdriven.LogOp(ctx, a.name, "poll_run",
+	adapterdriven.LogOp(ctx, a.name, "get_run",
 		slog.String(adapterdriven.LogKeyID, jobName),
 		slog.String("run_id", runID))
 
 	j, err := a.getJob(ctx, jobName)
 	if err != nil {
-		adapterdriven.LogError(ctx, a.name, "poll_run", err)
+		adapterdriven.LogError(ctx, a.name, "get_run", err)
 		return nil, err
 	}
 
@@ -86,31 +125,31 @@ func (a *Adapter) PollRun(ctx context.Context, jobName string, runID string) (*d
 		b, err = j.GetBuild(ctx, num)
 	}
 	if err != nil {
-		adapterdriven.LogError(ctx, a.name, "poll_run", err)
+		adapterdriven.LogError(ctx, a.name, "get_run", err)
 		return nil, fmt.Errorf("%w: %s #%s", ErrBuildNotFound, jobName, runID)
 	}
 
 	run := a.mapBuild(ctx, b)
-	adapterdriven.LogOpDone(ctx, a.name, "poll_run",
+	adapterdriven.LogOpDone(ctx, a.name, "get_run",
 		slog.Duration(adapterdriven.LogKeyElapsed, time.Since(start)))
 	return run, nil
 }
 
-func (a *Adapter) ListJobs(ctx context.Context, jobName string, runID string) ([]domain.CIJob, error) {
+func (a *Adapter) ListStages(ctx context.Context, jobName string, runID string) ([]domain.CIJob, error) {
 	start := time.Now()
-	adapterdriven.LogOp(ctx, a.name, "list_jobs",
+	adapterdriven.LogOp(ctx, a.name, "list_stages",
 		slog.String(adapterdriven.LogKeyID, jobName),
 		slog.String("run_id", runID))
 
 	j, err := a.getJob(ctx, jobName)
 	if err != nil {
-		adapterdriven.LogError(ctx, a.name, "list_jobs", err)
+		adapterdriven.LogError(ctx, a.name, "list_stages", err)
 		return nil, err
 	}
 
 	raw, err := j.GetPipelineRun(ctx, runID)
 	if err != nil {
-		adapterdriven.LogError(ctx, a.name, "list_jobs", err)
+		adapterdriven.LogError(ctx, a.name, "list_stages", err)
 		return nil, err
 	}
 
@@ -126,21 +165,21 @@ func (a *Adapter) ListJobs(ctx context.Context, jobName string, runID string) ([
 		})
 	}
 
-	adapterdriven.LogOpDone(ctx, a.name, "list_jobs",
+	adapterdriven.LogOpDone(ctx, a.name, "list_stages",
 		slog.Duration(adapterdriven.LogKeyElapsed, time.Since(start)),
 		slog.Int(adapterdriven.LogKeyCount, len(jobs)))
 	return jobs, nil
 }
 
-func (a *Adapter) GetJobLog(ctx context.Context, jobName string, runID string) (string, error) {
+func (a *Adapter) GetLog(ctx context.Context, jobName string, runID string, _ domain.LogFilter) (string, error) {
 	start := time.Now()
-	adapterdriven.LogOp(ctx, a.name, "get_job_log",
+	adapterdriven.LogOp(ctx, a.name, "get_log",
 		slog.String(adapterdriven.LogKeyID, jobName),
 		slog.String("run_id", runID))
 
 	j, err := a.getJob(ctx, jobName)
 	if err != nil {
-		adapterdriven.LogError(ctx, a.name, "get_job_log", err)
+		adapterdriven.LogError(ctx, a.name, "get_log", err)
 		return "", err
 	}
 
@@ -151,12 +190,12 @@ func (a *Adapter) GetJobLog(ctx context.Context, jobName string, runID string) (
 
 	b, err := j.GetBuild(ctx, num)
 	if err != nil {
-		adapterdriven.LogError(ctx, a.name, "get_job_log", err)
+		adapterdriven.LogError(ctx, a.name, "get_log", err)
 		return "", fmt.Errorf("%w: %s #%s", ErrBuildNotFound, jobName, runID)
 	}
 
 	output := b.GetConsoleOutput(ctx)
-	adapterdriven.LogOpDone(ctx, a.name, "get_job_log",
+	adapterdriven.LogOpDone(ctx, a.name, "get_log",
 		slog.Duration(adapterdriven.LogKeyElapsed, time.Since(start)))
 	return output, nil
 }
@@ -255,18 +294,9 @@ func (a *Adapter) GetArtifact(ctx context.Context, jobName string, runID string,
 	return data, nil
 }
 
-func (a *Adapter) GetEstimatedDuration(ctx context.Context, jobName string) (int64, error) {
-	j, err := a.getJob(ctx, jobName)
-	if err != nil {
-		return 0, err
-	}
-	b, err := j.GetLastBuild(ctx)
-	if err != nil {
-		return 0, nil
-	}
-	return int64(b.Raw.EstimatedDuration), nil
-}
-
+// pollQueue resolves a Jenkins build queue item to a build number.
+// Used internally by ResolveReceipt. Returns empty string when the
+// item is not yet assigned to an executor.
 func (a *Adapter) PollQueue(ctx context.Context, queueID string) (string, error) {
 	start := time.Now()
 	adapterdriven.LogOp(ctx, a.name, "poll_queue", slog.String("queue_id", queueID))
@@ -297,9 +327,9 @@ func (a *Adapter) PollQueue(ctx context.Context, queueID string) (string, error)
 	return result, nil
 }
 
-func (a *Adapter) GetBuildParams(ctx context.Context, jobName string, runID string) (map[string]string, error) {
+func (a *Adapter) GetRunParams(ctx context.Context, jobName string, runID string) (map[string]string, error) {
 	start := time.Now()
-	adapterdriven.LogOp(ctx, a.name, "get_build_params",
+	adapterdriven.LogOp(ctx, a.name, "get_run_params",
 		slog.String(adapterdriven.LogKeyID, jobName),
 		slog.String("run_id", runID))
 
@@ -315,7 +345,7 @@ func (a *Adapter) GetBuildParams(ctx context.Context, jobName string, runID stri
 
 	b, err := j.GetBuild(ctx, num)
 	if err != nil {
-		adapterdriven.LogError(ctx, a.name, "get_build_params", err)
+		adapterdriven.LogError(ctx, a.name, "get_run_params", err)
 		return nil, fmt.Errorf("%w: %s #%s", ErrBuildNotFound, jobName, runID)
 	}
 
@@ -324,7 +354,7 @@ func (a *Adapter) GetBuildParams(ctx context.Context, jobName string, runID stri
 		params[p.Name] = fmt.Sprintf("%v", p.Value)
 	}
 
-	adapterdriven.LogOpDone(ctx, a.name, "get_build_params",
+	adapterdriven.LogOpDone(ctx, a.name, "get_run_params",
 		slog.Duration(adapterdriven.LogKeyElapsed, time.Since(start)),
 		slog.Int(adapterdriven.LogKeyCount, len(params)))
 	return params, nil
@@ -392,8 +422,8 @@ func extractUpstreamFromBuild(b *gojenkins.Build) (upstreamJob, upstreamRunID st
 	return
 }
 
-// listBuildsResponse is the minimal Jenkins API shape used by ListBuilds.
-type listBuildsResponse struct {
+// listRunsResponse is the minimal Jenkins API shape used by ListBuilds.
+type listRunsResponse struct {
 	Builds []struct {
 		Number          int64  `json:"number"`
 		Result          string `json:"result"`
@@ -405,12 +435,12 @@ type listBuildsResponse struct {
 	} `json:"builds"`
 }
 
-func (a *Adapter) ListBuilds(ctx context.Context, jobName string, limit int) ([]domain.CIRun, error) {
+func (a *Adapter) ListRuns(ctx context.Context, jobName string, limit int) ([]domain.CIRun, error) {
 	start := time.Now()
 	if limit <= 0 {
 		limit = 10
 	}
-	adapterdriven.LogOp(ctx, a.name, "list_builds",
+	adapterdriven.LogOp(ctx, a.name, "list_runs",
 		slog.String(adapterdriven.LogKeyID, jobName),
 		slog.Int("limit", limit))
 
@@ -431,7 +461,7 @@ func (a *Adapter) ListBuilds(ctx context.Context, jobName string, limit int) ([]
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		adapterdriven.LogError(ctx, a.name, "list_builds", err)
+		adapterdriven.LogError(ctx, a.name, "list_runs", err)
 		return nil, err
 	}
 	defer resp.Body.Close()
@@ -440,7 +470,7 @@ func (a *Adapter) ListBuilds(ctx context.Context, jobName string, limit int) ([]
 		return nil, fmt.Errorf("%w: %s (HTTP %d)", ErrJobNotFound, jobName, resp.StatusCode)
 	}
 
-	var payload listBuildsResponse
+	var payload listRunsResponse
 	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
 		return nil, fmt.Errorf("list_builds decode: %w", err)
 	}
@@ -469,7 +499,7 @@ func (a *Adapter) ListBuilds(ctx context.Context, jobName string, limit int) ([]
 		})
 	}
 
-	adapterdriven.LogOpDone(ctx, a.name, "list_builds",
+	adapterdriven.LogOpDone(ctx, a.name, "list_runs",
 		slog.Duration(adapterdriven.LogKeyElapsed, time.Since(start)),
 		slog.Int(adapterdriven.LogKeyCount, len(runs)))
 	return runs, nil
@@ -574,7 +604,7 @@ type buildWithParams struct {
 	Actions         []buildAction `json:"actions"`
 }
 
-func (a *Adapter) SearchBuilds(ctx context.Context, jobName string, f domain.BuildFilter) ([]domain.CIRun, error) {
+func (a *Adapter) SearchRuns(ctx context.Context, jobName string, f domain.BuildFilter) ([]domain.CIRun, error) {
 	start := time.Now()
 	limit := f.Limit
 	if limit <= 0 {
@@ -603,7 +633,7 @@ func (a *Adapter) SearchBuilds(ctx context.Context, jobName string, f domain.Bui
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		adapterdriven.LogError(ctx, a.name, "search_builds", err)
+		adapterdriven.LogError(ctx, a.name, "search_runs", err)
 		return nil, err
 	}
 	defer resp.Body.Close()
@@ -719,7 +749,7 @@ func (a *Adapter) SearchBuilds(ctx context.Context, jobName string, f domain.Bui
 		})
 	}
 
-	adapterdriven.LogOpDone(ctx, a.name, "search_builds",
+	adapterdriven.LogOpDone(ctx, a.name, "search_runs",
 		slog.Duration(adapterdriven.LogKeyElapsed, time.Since(start)),
 		slog.Int(adapterdriven.LogKeyCount, len(runs)))
 	return runs, nil

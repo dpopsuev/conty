@@ -8,24 +8,30 @@ import (
 	"github.com/dpopsuev/conty/internal/port/driven"
 )
 
-var _ driven.CIAdapter = (*StubCIAdapter)(nil)
+// compile-time assertions — StubCIAdapter satisfies CICore plus all optional interfaces.
+var _ driven.CICore         = (*StubCIAdapter)(nil)
+var _ driven.CITriggerable  = (*StubCIAdapter)(nil)
+var _ driven.CIHistorical   = (*StubCIAdapter)(nil)
+var _ driven.CIPipeliner    = (*StubCIAdapter)(nil)
+var _ driven.CIArtifactStore = (*StubCIAdapter)(nil)
+var _ driven.CIChainable    = (*StubCIAdapter)(nil)
 
 type TriggerRunCall struct {
 	JobName string
 	Params  map[string]string
 }
 
-type PollRunCall struct {
+type GetRunCall struct {
 	JobName string
 	RunID   string
 }
 
-type ListJobsCall struct {
+type ListStagesCall struct {
 	JobName string
 	RunID   string
 }
 
-type GetJobLogCall struct {
+type GetLogCall struct {
 	JobName string
 	RunID   string
 }
@@ -44,7 +50,7 @@ type GetArtifactCall struct {
 type StubCIAdapter struct {
 	NameVal           string
 	RunID             string
-	QueueID           string
+	QueueID           string // kept for backward compat; maps to TriggerReceipt.OpaqueRef
 	Run               *domain.CIRun
 	Jobs              []domain.CIJob
 	Log               string
@@ -52,26 +58,25 @@ type StubCIAdapter struct {
 	Artifact          []byte
 	BuildParams       map[string]string
 	Builds            []domain.CIRun
-	EstimatedDuration   int64
-	DownstreamRuns      []domain.CIRun
-	Err                 error
+	DownstreamRuns    []domain.CIRun
+	EstimatedDuration int64
+	Err               error
 
-	TriggerRunErr    error
-	PollRunErr       error
-	PollQueueErr     error
-	ListJobsErr      error
-	GetJobLogErr     error
-	GetBuildParamsErr error
-	ListBuildsErr    error
-	ListArtifactsErr error
-	GetArtifactErr        error
-	GetDownstreamRunsErr  error
+	TriggerRunErr        error
+	GetRunErr            error
+	ListStagesErr        error
+	GetLogErr            error
+	GetBuildParamsErr    error
+	ListBuildsErr        error
+	ListArtifactsErr     error
+	GetArtifactErr       error
+	GetDownstreamRunsErr error
 
 	mu                 sync.Mutex
 	TriggerRunCalls    []TriggerRunCall
-	PollRunCalls       []PollRunCall
-	ListJobsCalls      []ListJobsCall
-	GetJobLogCalls     []GetJobLogCall
+	GetRunCalls        []GetRunCall
+	ListStagesCalls    []ListStagesCall
+	GetLogCalls        []GetLogCall
 	ListArtifactsCalls []ListArtifactsCall
 	GetArtifactCalls   []GetArtifactCall
 }
@@ -82,26 +87,18 @@ func NewStubCIAdapter(name string) *StubCIAdapter {
 
 func (s *StubCIAdapter) Name() string { return s.NameVal }
 func (s *StubCIAdapter) Type() string  { return "stub" }
-
-func (s *StubCIAdapter) TriggerRun(_ context.Context, jobName string, params map[string]string) (string, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.TriggerRunCalls = append(s.TriggerRunCalls, TriggerRunCall{JobName: jobName, Params: params})
-	if s.TriggerRunErr != nil {
-		return "", s.TriggerRunErr
-	}
-	if s.Err != nil {
-		return "", s.Err
-	}
-	return s.RunID, nil
+func (s *StubCIAdapter) Capabilities() driven.CapabilitySet {
+	return driven.CapTrigger | driven.CapHistory | driven.CapStages | driven.CapArtifacts | driven.CapChain
 }
 
-func (s *StubCIAdapter) PollRun(_ context.Context, jobName, runID string) (*domain.CIRun, error) {
+// ── CICore ───────────────────────────────────────────────────────────────────
+
+func (s *StubCIAdapter) GetRun(_ context.Context, jobName, runID string) (*domain.CIRun, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.PollRunCalls = append(s.PollRunCalls, PollRunCall{JobName: jobName, RunID: runID})
-	if s.PollRunErr != nil {
-		return nil, s.PollRunErr
+	s.GetRunCalls = append(s.GetRunCalls, GetRunCall{JobName: jobName, RunID: runID})
+	if s.GetRunErr != nil {
+		return nil, s.GetRunErr
 	}
 	if s.Err != nil {
 		return nil, s.Err
@@ -109,54 +106,10 @@ func (s *StubCIAdapter) PollRun(_ context.Context, jobName, runID string) (*doma
 	return s.Run, nil
 }
 
-func (s *StubCIAdapter) PollQueue(_ context.Context, _ string) (string, error) {
-	if s.PollQueueErr != nil {
-		return "", s.PollQueueErr
-	}
-	return s.QueueID, nil
-}
-
-func (s *StubCIAdapter) ListJobs(_ context.Context, jobName, runID string) ([]domain.CIJob, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.ListJobsCalls = append(s.ListJobsCalls, ListJobsCall{JobName: jobName, RunID: runID})
-	if s.ListJobsErr != nil {
-		return nil, s.ListJobsErr
-	}
+func (s *StubCIAdapter) SearchRuns(_ context.Context, _ string, f domain.BuildFilter) ([]domain.CIRun, error) {
 	if s.Err != nil {
 		return nil, s.Err
 	}
-	return s.Jobs, nil
-}
-
-func (s *StubCIAdapter) GetJobLog(_ context.Context, jobName, runID string) (string, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.GetJobLogCalls = append(s.GetJobLogCalls, GetJobLogCall{JobName: jobName, RunID: runID})
-	if s.GetJobLogErr != nil {
-		return "", s.GetJobLogErr
-	}
-	if s.Err != nil {
-		return "", s.Err
-	}
-	return s.Log, nil
-}
-
-func (s *StubCIAdapter) GetBuildParams(_ context.Context, _, _ string) (map[string]string, error) {
-	if s.GetBuildParamsErr != nil {
-		return nil, s.GetBuildParamsErr
-	}
-	return s.BuildParams, nil
-}
-
-func (s *StubCIAdapter) ListBuilds(_ context.Context, _ string, _ int) ([]domain.CIRun, error) {
-	if s.ListBuildsErr != nil {
-		return nil, s.ListBuildsErr
-	}
-	return s.Builds, nil
-}
-
-func (s *StubCIAdapter) SearchBuilds(_ context.Context, _ string, f domain.BuildFilter) ([]domain.CIRun, error) {
 	var out []domain.CIRun
 	for _, b := range s.Builds {
 		if f.Result != "" && string(b.Result) != f.Result {
@@ -173,9 +126,92 @@ func (s *StubCIAdapter) SearchBuilds(_ context.Context, _ string, f domain.Build
 	return out, nil
 }
 
-func (s *StubCIAdapter) GetEstimatedDuration(_ context.Context, _ string) (int64, error) {
+func (s *StubCIAdapter) GetLog(_ context.Context, jobName, runID string, _ domain.LogFilter) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.GetLogCalls = append(s.GetLogCalls, GetLogCall{JobName: jobName, RunID: runID})
+	if s.GetLogErr != nil {
+		return "", s.GetLogErr
+	}
+	if s.Err != nil {
+		return "", s.Err
+	}
+	return s.Log, nil
+}
+
+func (s *StubCIAdapter) CancelRun(_ context.Context, _, _ string) error { return s.Err }
+
+// ── CITriggerable ────────────────────────────────────────────────────────────
+
+func (s *StubCIAdapter) Trigger(_ context.Context, jobName string, params map[string]string) (*domain.TriggerReceipt, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.TriggerRunCalls = append(s.TriggerRunCalls, TriggerRunCall{JobName: jobName, Params: params})
+	if s.TriggerRunErr != nil {
+		return nil, s.TriggerRunErr
+	}
+	if s.Err != nil {
+		return nil, s.Err
+	}
+	runID := s.RunID
+	needsResolve := runID == ""
+	opaqueRef := s.QueueID
+	return &domain.TriggerReceipt{
+		RunID:        runID,
+		OpaqueRef:    opaqueRef,
+		NeedsResolve: needsResolve,
+	}, nil
+}
+
+func (s *StubCIAdapter) ResolveReceipt(_ context.Context, r *domain.TriggerReceipt) (*domain.TriggerReceipt, error) {
+	if s.Err != nil {
+		return r, s.Err
+	}
+	if s.QueueID != "" && s.RunID != "" {
+		resolved := *r
+		resolved.RunID = s.RunID
+		resolved.NeedsResolve = false
+		return &resolved, nil
+	}
+	return r, nil
+}
+
+func (s *StubCIAdapter) EstimateDuration(_ context.Context, _ string) (int64, error) {
 	return s.EstimatedDuration, nil
 }
+
+// ── CIHistorical ─────────────────────────────────────────────────────────────
+
+func (s *StubCIAdapter) ListRuns(_ context.Context, _ string, _ int) ([]domain.CIRun, error) {
+	if s.ListBuildsErr != nil {
+		return nil, s.ListBuildsErr
+	}
+	return s.Builds, nil
+}
+
+func (s *StubCIAdapter) GetRunParams(_ context.Context, _, _ string) (map[string]string, error) {
+	if s.GetBuildParamsErr != nil {
+		return nil, s.GetBuildParamsErr
+	}
+	return s.BuildParams, nil
+}
+
+// ── CIPipeliner ──────────────────────────────────────────────────────────────
+
+func (s *StubCIAdapter) ListStages(_ context.Context, jobName, runID string) ([]domain.CIJob, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ListStagesCalls = append(s.ListStagesCalls, ListStagesCall{JobName: jobName, RunID: runID})
+	if s.ListStagesErr != nil {
+		return nil, s.ListStagesErr
+	}
+	if s.Err != nil {
+		return nil, s.Err
+	}
+	return s.Jobs, nil
+}
+
+// ── CIArtifactStore ──────────────────────────────────────────────────────────
 
 func (s *StubCIAdapter) ListArtifacts(_ context.Context, jobName, runID string) ([]domain.CIArtifact, error) {
 	s.mu.Lock()
@@ -190,15 +226,6 @@ func (s *StubCIAdapter) ListArtifacts(_ context.Context, jobName, runID string) 
 	return s.Artifacts, nil
 }
 
-func (s *StubCIAdapter) CancelRun(_ context.Context, _, _ string) error { return s.Err }
-
-func (s *StubCIAdapter) GetDownstreamRuns(_ context.Context, _, _, _ string) ([]domain.CIRun, error) {
-	if s.GetDownstreamRunsErr != nil {
-		return nil, s.GetDownstreamRunsErr
-	}
-	return s.DownstreamRuns, nil
-}
-
 func (s *StubCIAdapter) GetArtifact(_ context.Context, jobName, runID, path string) ([]byte, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -210,4 +237,13 @@ func (s *StubCIAdapter) GetArtifact(_ context.Context, jobName, runID, path stri
 		return nil, s.Err
 	}
 	return s.Artifact, nil
+}
+
+// ── CIChainable ──────────────────────────────────────────────────────────────
+
+func (s *StubCIAdapter) GetDownstreamRuns(_ context.Context, _, _, _ string) ([]domain.CIRun, error) {
+	if s.GetDownstreamRunsErr != nil {
+		return nil, s.GetDownstreamRunsErr
+	}
+	return s.DownstreamRuns, nil
 }

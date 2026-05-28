@@ -33,7 +33,8 @@ var contySchema = json.RawMessage(`{
 		"backend":  {"type": "string", "description": "Backend name (listed by help)"},
 		"job_ref":  {"type": "string", "description": "Job path e.g. 'ocp-baremetal-ipi-deployment' or 'CI/far-edge-vran-deployment'"},
 		"run_id":   {"type": "string", "description": "Build number. Optional for status/log — omit to use the latest build."},
-		"queue_id": {"type": "string", "description": "Queue item ID returned by trigger. Pass to wait to resolve to build_number."},
+		"queue_id":   {"type": "string", "description": "Queue item ID returned by trigger (deprecated: use opaque_ref). Pass to wait to resolve to build_number."},
+		"opaque_ref": {"type": "string", "description": "Opaque trigger reference returned by trigger (replaces queue_id). Pass to wait to resolve to build_number."},
 		"pipeline": {"type": "string", "description": "Pipeline name. Use instead of backend+job_ref for pipeline operations (trigger, status, log)."},
 		"step":     {"type": "integer", "description": "Step index for pipeline log (0-based). Use with pipeline."},
 		"params":   {"type": "object", "description": "Key-value pairs: build parameters for trigger, or parameter filter for search."},
@@ -62,7 +63,8 @@ type ciArgs struct {
 	Backend  string            `json:"backend"`
 	JobRef   string            `json:"job_ref"`
 	RunID    string            `json:"run_id"`
-	QueueID  string            `json:"queue_id"`
+	QueueID   string            `json:"queue_id"`
+	OpaqueRef string            `json:"opaque_ref"`
 	Pipeline string            `json:"pipeline"`
 	Step     int               `json:"step"`
 	Params   map[string]string `json:"params"`
@@ -244,8 +246,13 @@ func buildServer(svc ContyService) *mcpserver.Server {
 				if args.Backend == "" {
 					return tool.Result{}, errBackendRequired
 				}
-				if args.QueueID != "" {
-					buildNum, err := svc.CIPoll(ctx, args.Backend, args.QueueID)
+				// opaque_ref is the new name; queue_id is kept for backward compat.
+				opaqueRef := args.OpaqueRef
+				if opaqueRef == "" {
+					opaqueRef = args.QueueID
+				}
+				if opaqueRef != "" {
+					buildNum, err := svc.CIPoll(ctx, args.Backend, opaqueRef)
 					if err != nil {
 						return tool.Result{}, err
 					}
@@ -363,7 +370,11 @@ func handleHelp(svc ContyService) (tool.Result, error) {
 	if len(backends) > 0 {
 		fmt.Fprintln(&b, "Backends:")
 		for _, bi := range backends {
-			fmt.Fprintf(&b, "  %-24s %s\n", bi.Name, bi.Type)
+			line := fmt.Sprintf("  %-24s %s", bi.Name, bi.Type)
+			if bi.Capabilities != "" {
+				line += "  [" + bi.Capabilities + "]"
+			}
+			fmt.Fprintln(&b, line)
 		}
 		fmt.Fprintln(&b)
 	}

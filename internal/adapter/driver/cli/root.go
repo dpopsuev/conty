@@ -13,7 +13,6 @@ import (
 	"github.com/dpopsuev/conty/internal/app"
 	"github.com/dpopsuev/conty/internal/config"
 	"github.com/dpopsuev/conty/internal/domain"
-	"github.com/dpopsuev/conty/internal/port/driven/driventest"
 	"github.com/spf13/cobra"
 )
 
@@ -122,27 +121,9 @@ func newServiceFromConfig() (*app.Service, error) {
 }
 
 func newServiceFromStubs() (*app.Service, error) {
-	stub := driventest.NewStubCIAdapter("stub")
-	stub.RunID = "stub-run-1"
-	stub.Run = &domain.CIRun{
-		ID:     "stub-run-1",
-		Name:   "stub-job",
-		Status: domain.RunStatusSuccess,
-		Result: domain.RunResultSuccess,
-	}
-
-	svc := app.NewService(stub)
-	svc.RegisterPipeline(domain.Pipeline{
-		Name:    "lab-deploy",
-		Backend: "stub",
-		Steps: []domain.PipelineStep{
-			{JobName: "step-1"},
-			{JobName: "step-2"},
-			{JobName: "step-3"},
-		},
-	})
-
-	return svc, nil
+	// No config file found. Return an empty service — backends are loaded from config only.
+	// For local dev with a stub adapter, set CONTY_CONFIG or provide a config file.
+	return app.NewService(), nil
 }
 
 func printJSON(v any) error {

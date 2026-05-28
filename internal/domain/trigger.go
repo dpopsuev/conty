@@ -1,5 +1,19 @@
 package domain
 
+// TriggerReceipt is returned by CITriggerable.Trigger. Backends that assign
+// a run ID synchronously (GitLab, Prow) set NeedsResolve=false and populate
+// RunID immediately. Backends that use an async queue (Jenkins) or have no
+// run ID at dispatch time (GitHub Actions) set NeedsResolve=true and populate
+// OpaqueRef with a backend-specific polling token. Call ResolveReceipt in a
+// loop until NeedsResolve is false.
+type TriggerReceipt struct {
+	RunID        string // populated when run ID is known; empty until resolved
+	OpaqueRef    string // backend-specific token: Jenkins queue ID, GitHub dispatch timestamp
+	NeedsResolve bool   // true → call ResolveReceipt() until false
+	Backend      string
+	JobRef       string
+}
+
 type TriggerResult struct {
 	QueueID           string `json:"queue_id"`
 	BuildNumber       string `json:"build_number,omitempty"`

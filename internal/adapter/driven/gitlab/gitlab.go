@@ -23,7 +23,13 @@ const (
 	BackendName = "gitlab"
 )
 
-var _ driven.CIAdapter = (*Adapter)(nil)
+// compile-time assertions
+var _ driven.CICore         = (*Adapter)(nil)
+var _ driven.CITriggerable  = (*Adapter)(nil)
+var _ driven.CIHistorical   = (*Adapter)(nil)
+var _ driven.CIPipeliner    = (*Adapter)(nil)
+var _ driven.CIArtifactStore = (*Adapter)(nil)
+var _ driven.CIChainable    = (*Adapter)(nil)
 
 var (
 	ErrProjectRequired = errors.New("project ID is required")
@@ -58,48 +64,29 @@ func New(name, token, projectID, baseURL string) (*Adapter, error) {
 
 func (a *Adapter) Name() string { return a.name }
 func (a *Adapter) Type() string { return BackendName }
-
-func (a *Adapter) TriggerRun(ctx context.Context, jobName string, params map[string]string) (string, error) {
-	if a.token == "" {
-		return "", ErrAuthRequired
-	}
-	start := time.Now()
-	adapterdriven.LogOp(ctx, a.name, "trigger_run", slog.String(adapterdriven.LogKeyID, jobName))
-
-	ref := "main"
-	if r, ok := params["ref"]; ok {
-		ref = r
-	}
-
-	path := fmt.Sprintf("/api/v4/projects/%s/pipeline?ref=%s", a.projectID, ref)
-	var resp glPipeline
-	if err := a.api(ctx, http.MethodPost, path, nil, &resp); err != nil {
-		adapterdriven.LogError(ctx, a.name, "trigger_run", err)
-		return "", err
-	}
-
-	adapterdriven.LogOpDone(ctx, a.name, "trigger_run",
-		slog.Duration(adapterdriven.LogKeyElapsed, time.Since(start)))
-	return strconv.FormatInt(resp.ID, 10), nil
+func (a *Adapter) Capabilities() driven.CapabilitySet {
+	return driven.CapTrigger | driven.CapHistory | driven.CapStages | driven.CapArtifacts | driven.CapChain
 }
 
-func (a *Adapter) PollRun(ctx context.Context, _ string, runID string) (*domain.CIRun, error) {
+// ── CICore ────────────────────────────────────────────────────────────────────
+
+func (a *Adapter) GetRun(ctx context.Context, _ string, runID string) (*domain.CIRun, error) {
 	start := time.Now()
-	adapterdriven.LogOp(ctx, a.name, "poll_run", slog.String("run_id", runID))
+	adapterdriven.LogOp(ctx, a.name, "get_run", slog.String("run_id", runID))
 
 	var path string
 	if runID == "latest" {
 		path = fmt.Sprintf("/api/v4/projects/%s/pipelines?per_page=1", a.projectID)
 		var resp []glPipeline
 		if err := a.api(ctx, http.MethodGet, path, nil, &resp); err != nil {
-			adapterdriven.LogError(ctx, a.name, "poll_run", err)
+			adapterdriven.LogError(ctx, a.name, "get_run", err)
 			return nil, err
 		}
 		if len(resp) == 0 {
 			return nil, fmt.Errorf("%w: no pipelines found", ErrNotFound)
 		}
 		run := resp[0].toCIRun()
-		adapterdriven.LogOpDone(ctx, a.name, "poll_run",
+		adapterdriven.LogOpDone(ctx, a.name, "get_run",
 			slog.Duration(adapterdriven.LogKeyElapsed, time.Since(start)))
 		return &run, nil
 	}
@@ -107,39 +94,65 @@ func (a *Adapter) PollRun(ctx context.Context, _ string, runID string) (*domain.
 	path = fmt.Sprintf("/api/v4/projects/%s/pipelines/%s", a.projectID, runID)
 	var resp glPipeline
 	if err := a.api(ctx, http.MethodGet, path, nil, &resp); err != nil {
-		adapterdriven.LogError(ctx, a.name, "poll_run", err)
+		adapterdriven.LogError(ctx, a.name, "get_run", err)
 		return nil, err
 	}
 	run := resp.toCIRun()
-	adapterdriven.LogOpDone(ctx, a.name, "poll_run",
+	adapterdriven.LogOpDone(ctx, a.name, "get_run",
 		slog.Duration(adapterdriven.LogKeyElapsed, time.Since(start)))
 	return &run, nil
 }
 
-func (a *Adapter) ListJobs(ctx context.Context, _ string, runID string) ([]domain.CIJob, error) {
+func (a *Adapter) SearchRuns(ctx context.Context, _ string, f domain.BuildFilter) ([]domain.CIRun, error) {
 	start := time.Now()
-	adapterdriven.LogOp(ctx, a.name, "list_jobs", slog.String("run_id", runID))
+	adapterdriven.LogOp(ctx, a.name, "search_runs")
 
-	path := fmt.Sprintf("/api/v4/projects/%s/pipelines/%s/jobs?per_page=100", a.projectID, runID)
-	var resp []glJob
+	limit := f.Limit
+	if limit <= 0 {
+		limit = 20
+	}
+	fetch := limit * 3
+	if fetch < 50 {
+		fetch = 50
+	}
+
+	params := url.Values{}
+	params.Set("per_page", strconv.Itoa(fetch))
+	if f.Result != "" {
+		params.Set("status", mapResultToGLStatus(f.Result))
+	}
+	if f.Runner != "" {
+		params.Set("username", f.Runner)
+	}
+
+	path := fmt.Sprintf("/api/v4/projects/%s/pipelines?%s", a.projectID, params.Encode())
+	var resp []glPipeline
 	if err := a.api(ctx, http.MethodGet, path, nil, &resp); err != nil {
-		adapterdriven.LogError(ctx, a.name, "list_jobs", err)
+		adapterdriven.LogError(ctx, a.name, "search_runs", err)
 		return nil, err
 	}
 
-	jobs := make([]domain.CIJob, len(resp))
-	for i := range resp {
-		jobs[i] = resp[i].toCIJob()
+	var runs []domain.CIRun
+	for _, p := range resp {
+		if len(runs) >= limit {
+			break
+		}
+		run := p.toCIRun()
+		if !f.Since.IsZero() && run.StartedAt.Before(f.Since) {
+			continue
+		}
+		runs = append(runs, run)
 	}
-	adapterdriven.LogOpDone(ctx, a.name, "list_jobs",
+
+	adapterdriven.LogOpDone(ctx, a.name, "search_runs",
 		slog.Duration(adapterdriven.LogKeyElapsed, time.Since(start)),
-		slog.Int(adapterdriven.LogKeyCount, len(jobs)))
-	return jobs, nil
+		slog.Int(adapterdriven.LogKeyCount, len(runs)))
+	return runs, nil
 }
 
-func (a *Adapter) GetJobLog(ctx context.Context, _ string, runID string) (string, error) {
+func (a *Adapter) GetLog(ctx context.Context, _ string, runID string, _ domain.LogFilter) (string, error) {
 	start := time.Now()
-	adapterdriven.LogOp(ctx, a.name, "get_job_log", slog.String("run_id", runID))
+	adapterdriven.LogOp(ctx, a.name, "get_log", slog.String("run_id", runID))
 
 	fullURL := fmt.Sprintf("%s/api/v4/projects/%s/jobs/%s/trace", a.baseURL, a.projectID, runID)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fullURL, http.NoBody)
@@ -152,7 +165,7 @@ func (a *Adapter) GetJobLog(ctx context.Context, _ string, runID string) (string
 
 	resp, err := a.client.Do(req)
 	if err != nil {
-		adapterdriven.LogError(ctx, a.name, "get_job_log", err)
+		adapterdriven.LogError(ctx, a.name, "get_log", err)
 		return "", err
 	}
 	defer resp.Body.Close()
@@ -166,10 +179,105 @@ func (a *Adapter) GetJobLog(ctx context.Context, _ string, runID string) (string
 	if err != nil {
 		return "", fmt.Errorf("read trace: %w", err)
 	}
-	adapterdriven.LogOpDone(ctx, a.name, "get_job_log",
+	adapterdriven.LogOpDone(ctx, a.name, "get_log",
 		slog.Duration(adapterdriven.LogKeyElapsed, time.Since(start)))
 	return string(data), nil
 }
+
+func (a *Adapter) CancelRun(_ context.Context, _, _ string) error { return nil }
+
+// ── CITriggerable ─────────────────────────────────────────────────────────────
+
+// Trigger creates a GitLab pipeline. GitLab returns the pipeline ID
+// immediately, so NeedsResolve=false — ResolveReceipt is a no-op.
+func (a *Adapter) Trigger(ctx context.Context, jobRef string, params map[string]string) (*domain.TriggerReceipt, error) {
+	if a.token == "" {
+		return nil, ErrAuthRequired
+	}
+	start := time.Now()
+	adapterdriven.LogOp(ctx, a.name, "trigger", slog.String(adapterdriven.LogKeyID, jobRef))
+
+	ref := "main"
+	if params != nil {
+		if r, ok := params["ref"]; ok {
+			ref = r
+		}
+	}
+
+	path := fmt.Sprintf("/api/v4/projects/%s/pipeline?ref=%s", a.projectID, ref)
+	var resp glPipeline
+	if err := a.api(ctx, http.MethodPost, path, nil, &resp); err != nil {
+		adapterdriven.LogError(ctx, a.name, "trigger", err)
+		return nil, err
+	}
+
+	runID := strconv.FormatInt(resp.ID, 10)
+	adapterdriven.LogOpDone(ctx, a.name, "trigger",
+		slog.Duration(adapterdriven.LogKeyElapsed, time.Since(start)),
+		slog.String("run_id", runID))
+	return &domain.TriggerReceipt{
+		RunID:        runID,
+		NeedsResolve: false,
+		Backend:      a.name,
+		JobRef:       jobRef,
+	}, nil
+}
+
+// ResolveReceipt is a no-op for GitLab — pipeline ID is always available immediately.
+func (a *Adapter) ResolveReceipt(_ context.Context, r *domain.TriggerReceipt) (*domain.TriggerReceipt, error) {
+	return r, nil
+}
+
+func (a *Adapter) EstimateDuration(_ context.Context, _ string) (int64, error) {
+	return 0, nil
+}
+
+// ── CIHistorical ──────────────────────────────────────────────────────────────
+
+func (a *Adapter) ListRuns(ctx context.Context, _ string, limit int) ([]domain.CIRun, error) {
+	if limit <= 0 {
+		limit = 10
+	}
+	path := fmt.Sprintf("/api/v4/projects/%s/pipelines?per_page=%d", a.projectID, limit)
+	var resp []glPipeline
+	if err := a.api(ctx, http.MethodGet, path, nil, &resp); err != nil {
+		return nil, err
+	}
+	runs := make([]domain.CIRun, len(resp))
+	for i := range resp {
+		runs[i] = resp[i].toCIRun()
+	}
+	return runs, nil
+}
+
+func (a *Adapter) GetRunParams(_ context.Context, _, _ string) (map[string]string, error) {
+	return nil, fmt.Errorf("%w: GitLab CI pipeline variables not yet supported", ErrNotFound)
+}
+
+// ── CIPipeliner ───────────────────────────────────────────────────────────────
+
+func (a *Adapter) ListStages(ctx context.Context, _ string, runID string) ([]domain.CIJob, error) {
+	start := time.Now()
+	adapterdriven.LogOp(ctx, a.name, "list_stages", slog.String("run_id", runID))
+
+	path := fmt.Sprintf("/api/v4/projects/%s/pipelines/%s/jobs?per_page=100", a.projectID, runID)
+	var resp []glJob
+	if err := a.api(ctx, http.MethodGet, path, nil, &resp); err != nil {
+		adapterdriven.LogError(ctx, a.name, "list_stages", err)
+		return nil, err
+	}
+
+	jobs := make([]domain.CIJob, len(resp))
+	for i := range resp {
+		jobs[i] = resp[i].toCIJob()
+	}
+	adapterdriven.LogOpDone(ctx, a.name, "list_stages",
+		slog.Duration(adapterdriven.LogKeyElapsed, time.Since(start)),
+		slog.Int(adapterdriven.LogKeyCount, len(jobs)))
+	return jobs, nil
+}
+
+// ── CIArtifactStore ───────────────────────────────────────────────────────────
 
 func (a *Adapter) ListArtifacts(ctx context.Context, _ string, runID string) ([]domain.CIArtifact, error) {
 	start := time.Now()
@@ -241,33 +349,44 @@ func (a *Adapter) GetArtifact(ctx context.Context, _ string, runID string, path 
 	return data, nil
 }
 
-func (a *Adapter) GetEstimatedDuration(_ context.Context, _ string) (int64, error) {
-	return 0, nil
-}
+// ── CIChainable — bridges API ─────────────────────────────────────────────────
 
-func (a *Adapter) PollQueue(_ context.Context, _ string) (string, error) {
-	return "", fmt.Errorf("%w: GitLab CI uses pipeline IDs, not queue IDs", ErrNotFound)
-}
+// GetDownstreamRuns uses the GitLab bridges API to find child pipelines
+// triggered by pipeline upstreamRunID. The downstreamJob and upstreamJob
+// params are informational; GitLab bridges are scoped to the parent pipeline.
+func (a *Adapter) GetDownstreamRuns(ctx context.Context, _, _, upstreamRunID string) ([]domain.CIRun, error) {
+	start := time.Now()
+	adapterdriven.LogOp(ctx, a.name, "get_downstream_runs",
+		slog.String("upstream_run_id", upstreamRunID))
 
-func (a *Adapter) GetBuildParams(_ context.Context, _, _ string) (map[string]string, error) {
-	return nil, fmt.Errorf("%w: GitLab CI pipeline variables not yet supported", ErrNotFound)
-}
+	path := fmt.Sprintf("/api/v4/projects/%s/pipelines/%s/bridges?per_page=100",
+		a.projectID, upstreamRunID)
 
-func (a *Adapter) ListBuilds(ctx context.Context, _ string, limit int) ([]domain.CIRun, error) {
-	if limit <= 0 {
-		limit = 10
+	var bridges []struct {
+		DownstreamPipeline *glPipeline `json:"downstream_pipeline"`
 	}
-	path := fmt.Sprintf("/api/v4/projects/%s/pipelines?per_page=%d", a.projectID, limit)
-	var resp []glPipeline
-	if err := a.api(ctx, http.MethodGet, path, nil, &resp); err != nil {
+	if err := a.api(ctx, http.MethodGet, path, nil, &bridges); err != nil {
+		adapterdriven.LogError(ctx, a.name, "get_downstream_runs", err)
 		return nil, err
 	}
-	runs := make([]domain.CIRun, len(resp))
-	for i := range resp {
-		runs[i] = resp[i].toCIRun()
+
+	var runs []domain.CIRun
+	for _, b := range bridges {
+		if b.DownstreamPipeline == nil {
+			continue
+		}
+		run := b.DownstreamPipeline.toCIRun()
+		run.UpstreamRunID = upstreamRunID
+		runs = append(runs, run)
 	}
+
+	adapterdriven.LogOpDone(ctx, a.name, "get_downstream_runs",
+		slog.Duration(adapterdriven.LogKeyElapsed, time.Since(start)),
+		slog.Int(adapterdriven.LogKeyCount, len(runs)))
 	return runs, nil
 }
+
+// ── HTTP helper ───────────────────────────────────────────────────────────────
 
 func (a *Adapter) api(ctx context.Context, method, path string, body, result any) error {
 	var bodyReader io.Reader
@@ -328,6 +447,8 @@ func (a *Adapter) api(ctx context.Context, method, path string, body, result any
 	return nil
 }
 
+// ── Response types ────────────────────────────────────────────────────────────
+
 type glPipeline struct {
 	ID        int64   `json:"id"`
 	Status    string  `json:"status"`
@@ -352,11 +473,11 @@ func (p glPipeline) toCIRun() domain.CIRun {
 }
 
 type glJob struct {
-	ID     int64 `json:"id"`
-	Name   string `json:"name"`
-	Stage  string `json:"stage"`
-	Status string `json:"status"`
-	WebURL string `json:"web_url"`
+	ID        int64   `json:"id"`
+	Name      string  `json:"name"`
+	Stage     string  `json:"stage"`
+	Status    string  `json:"status"`
+	WebURL    string  `json:"web_url"`
 	StartedAt string  `json:"started_at"`
 	Duration  float64 `json:"duration"`
 }
@@ -406,13 +527,15 @@ func mapGLResult(status string) domain.RunResult {
 	}
 }
 
-
-func (a *Adapter) CancelRun(_ context.Context, _, _ string) error { return nil }
-
-func (a *Adapter) GetDownstreamRuns(_ context.Context, _, _, _ string) ([]domain.CIRun, error) {
-	return nil, nil
-}
-
-func (a *Adapter) SearchBuilds(ctx context.Context, jobName string, f domain.BuildFilter) ([]domain.CIRun, error) {
-	return nil, fmt.Errorf("SearchBuilds not supported for GitLab CI backend")
+func mapResultToGLStatus(result string) string {
+	switch strings.ToUpper(result) {
+	case "SUCCESS":
+		return "success"
+	case "FAILURE":
+		return "failed"
+	case "ABORTED":
+		return "canceled"
+	default:
+		return ""
+	}
 }

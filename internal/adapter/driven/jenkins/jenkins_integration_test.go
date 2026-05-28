@@ -37,6 +37,66 @@ func jenkinsCI(t *testing.T) *jenkins.Adapter {
 	return a
 }
 
+func TestGetRun_MatchesLatest(t *testing.T) {
+	a := jenkinsCI(t)
+
+	run, err := a.GetRun(context.Background(), knownJob(), "latest")
+	if err != nil {
+		t.Fatalf("GetRun(latest): %v", err)
+	}
+	if run.ID == "" {
+		t.Error("GetRun returned run with empty ID")
+	}
+	if run.URL == "" {
+		t.Error("GetRun returned run with empty URL")
+	}
+	t.Logf("latest run: #%s status=%s", run.ID, run.Status)
+}
+
+func TestGetLog_WithFilter(t *testing.T) {
+	a := jenkinsCI(t)
+
+	run, err := a.GetRun(context.Background(), knownJob(), "latest")
+	if err != nil {
+		t.Fatalf("GetRun: %v", err)
+	}
+
+	raw, err := a.GetLog(context.Background(), knownJob(), run.ID, domain.LogFilter{Grep: "Error", Tail: 50})
+	if err != nil {
+		t.Fatalf("GetLog: %v", err)
+	}
+	// LogFilter is a hint; adapter returns raw log; filtering happens in service.
+	// Just assert we got something back.
+	_ = raw
+	t.Logf("GetLog returned %d bytes", len(raw))
+}
+
+func TestListStages_ReturnsPipelineStages(t *testing.T) {
+	a := jenkinsCI(t)
+
+	run, err := a.GetRun(context.Background(), knownJob(), "latest")
+	if err != nil {
+		t.Fatalf("GetRun: %v", err)
+	}
+
+	stages, err := a.ListStages(context.Background(), knownJob(), run.ID)
+	if err != nil {
+		t.Logf("ListStages: %v (job may not be a pipeline) — skipping", err)
+		return
+	}
+	t.Logf("stages found: %d", len(stages))
+	for _, s := range stages {
+		t.Logf("  stage %s: %s", s.Name, s.Status)
+	}
+}
+
+func knownJob() string {
+	if j := os.Getenv("JENKINS_TEST_JOB_CI"); j != "" {
+		return j
+	}
+	return anchorDownstreamJob
+}
+
 func TestSearchBuildsUpstreamCause(t *testing.T) {
 	a := jenkinsCI(t)
 

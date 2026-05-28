@@ -21,16 +21,16 @@ var (
 )
 
 type Service struct {
-	adapters  map[string]driven.CIAdapter
+	adapters  map[string]driven.CICore
 	pipelines map[string]domain.Pipeline
 	runs      map[string]*domain.PipelineRun
 	owned     map[string]domain.OwnedRun
 	mu        sync.RWMutex
 }
 
-func NewService(adapters ...driven.CIAdapter) *Service {
+func NewService(adapters ...driven.CICore) *Service {
 	s := &Service{
-		adapters:  make(map[string]driven.CIAdapter, len(adapters)),
+		adapters:  make(map[string]driven.CICore, len(adapters)),
 		pipelines: make(map[string]domain.Pipeline),
 		runs:      make(map[string]*domain.PipelineRun),
 		owned:     make(map[string]domain.OwnedRun),
@@ -41,7 +41,7 @@ func NewService(adapters ...driven.CIAdapter) *Service {
 	return s
 }
 
-func (s *Service) AddAdapter(a driven.CIAdapter) {
+func (s *Service) AddAdapter(a driven.CICore) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.adapters[a.Name()] = a
@@ -53,7 +53,7 @@ func (s *Service) RegisterPipeline(p domain.Pipeline) {
 	s.pipelines[p.Name] = p
 }
 
-func (s *Service) adapter(name string) (driven.CIAdapter, error) {
+func (s *Service) adapter(name string) (driven.CICore, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	a, ok := s.adapters[name]
@@ -90,8 +90,27 @@ func (s *Service) TriggerPipeline(ctx context.Context, name string) (*domain.Pip
 			StartedAt: time.Now(),
 		}
 
-		runID, triggerErr := a.TriggerRun(ctx, step.JobName, step.Params)
-		if triggerErr != nil {
+		var runID string
+		if t, ok := a.(driven.CITriggerable); ok {
+			receipt, triggerErr := t.Trigger(ctx, step.JobName, step.Params)
+			if triggerErr != nil {
+				run.Steps[i].Status = domain.RunStatusFailure
+				run.Status = domain.RunStatusFailure
+				s.storeRun(name, run)
+				return run, nil
+			}
+			for receipt.NeedsResolve {
+				time.Sleep(2 * time.Second)
+				receipt, triggerErr = t.ResolveReceipt(ctx, receipt)
+				if triggerErr != nil {
+					run.Steps[i].Status = domain.RunStatusFailure
+					run.Status = domain.RunStatusFailure
+					s.storeRun(name, run)
+					return run, nil
+				}
+			}
+			runID = receipt.RunID
+		} else {
 			run.Steps[i].Status = domain.RunStatusFailure
 			run.Status = domain.RunStatusFailure
 			s.storeRun(name, run)
@@ -99,7 +118,7 @@ func (s *Service) TriggerPipeline(ctx context.Context, name string) (*domain.Pip
 		}
 		run.Steps[i].RunID = runID
 
-		ciRun, pollErr := a.PollRun(ctx, step.JobName, runID)
+		ciRun, pollErr := a.GetRun(ctx, step.JobName, runID)
 		if pollErr != nil {
 			run.Steps[i].Status = domain.RunStatusFailure
 			run.Status = domain.RunStatusFailure
@@ -152,7 +171,7 @@ func (s *Service) GetStepLog(ctx context.Context, name string, step int, f domai
 		return domain.LogResult{}, err
 	}
 
-	raw, err := a.GetJobLog(ctx, run.Steps[step].JobName, run.Steps[step].RunID)
+	raw, err := a.GetLog(ctx, run.Steps[step].JobName, run.Steps[step].RunID, f)
 	if err != nil {
 		return domain.LogResult{}, err
 	}
@@ -185,8 +204,9 @@ func (s *Service) BackendInfo() []domain.BackendInfo {
 	infos := make([]domain.BackendInfo, 0, len(s.adapters))
 	for _, a := range s.adapters {
 		infos = append(infos, domain.BackendInfo{
-			Name: a.Name(),
-			Type: a.Type(),
+			Name:         a.Name(),
+			Type:         a.Type(),
+			Capabilities: a.Capabilities().String(),
 		})
 	}
 	return infos
@@ -197,7 +217,11 @@ func (s *Service) CIArtifacts(ctx context.Context, backend, jobRef, runID string
 	if err != nil {
 		return nil, err
 	}
-	return a.ListArtifacts(ctx, jobRef, runID)
+	st, ok := a.(driven.CIArtifactStore)
+	if !ok {
+		return nil, fmt.Errorf("backend %q does not support artifacts (capabilities: %v)", a.Name(), a.Capabilities())
+	}
+	return st.ListArtifacts(ctx, jobRef, runID)
 }
 
 func (s *Service) CIGetRun(ctx context.Context, backend, jobRef, runID string) (*domain.CIRun, error) {
@@ -205,7 +229,7 @@ func (s *Service) CIGetRun(ctx context.Context, backend, jobRef, runID string) (
 	if err != nil {
 		return nil, err
 	}
-	return a.PollRun(ctx, jobRef, runID)
+	return a.GetRun(ctx, jobRef, runID)
 }
 
 func (s *Service) CIDownstream(ctx context.Context, backend, downstreamJob, upstreamJob, upstreamRunID string) ([]domain.CIRun, error) {
@@ -213,7 +237,11 @@ func (s *Service) CIDownstream(ctx context.Context, backend, downstreamJob, upst
 	if err != nil {
 		return nil, err
 	}
-	return a.GetDownstreamRuns(ctx, downstreamJob, upstreamJob, upstreamRunID)
+	c, ok := a.(driven.CIChainable)
+	if !ok {
+		return nil, fmt.Errorf("backend %q does not support chain traversal (capabilities: %v)", a.Name(), a.Capabilities())
+	}
+	return c.GetDownstreamRuns(ctx, downstreamJob, upstreamJob, upstreamRunID)
 }
 
 func (s *Service) CICancel(ctx context.Context, backend, jobRef, runID string) error {
@@ -224,7 +252,7 @@ func (s *Service) CICancel(ctx context.Context, backend, jobRef, runID string) e
 	if err != nil {
 		return err
 	}
-	return a.CancelRun(ctx, jobRef, runID)
+	return a.CancelRun(ctx, jobRef, runID) // CancelRun is on CICore — no capability check needed
 }
 
 func (s *Service) CIArtifactGet(ctx context.Context, backend, jobRef, runID, path string) ([]byte, error) {
@@ -232,7 +260,11 @@ func (s *Service) CIArtifactGet(ctx context.Context, backend, jobRef, runID, pat
 	if err != nil {
 		return nil, err
 	}
-	return a.GetArtifact(ctx, jobRef, runID, path)
+	st, ok := a.(driven.CIArtifactStore)
+	if !ok {
+		return nil, fmt.Errorf("backend %q does not support artifact download (capabilities: %v)", a.Name(), a.Capabilities())
+	}
+	return st.GetArtifact(ctx, jobRef, runID, path)
 }
 
 // CIArtifactText fetches an artifact and applies LogFilter if the content is
@@ -273,7 +305,7 @@ func (s *Service) CheckLatest(ctx context.Context, backend, jobRef string) (*dom
 		return nil, err
 	}
 
-	run, err := a.PollRun(ctx, jobRef, "latest")
+	run, err := a.GetRun(ctx, jobRef, "latest")
 	if err != nil {
 		return nil, err
 	}
@@ -297,7 +329,7 @@ func (s *Service) GetVerdict(ctx context.Context, backend, jobRef, runID string,
 		if aerr != nil {
 			return nil, aerr
 		}
-		run, rerr := a.PollRun(ctx, jobRef, runID)
+		run, rerr := a.GetRun(ctx, jobRef, runID)
 		if rerr != nil {
 			return nil, rerr
 		}
@@ -338,17 +370,25 @@ func (s *Service) TriggerRedeployWithParams(ctx context.Context, backend, jobRef
 	if err != nil {
 		return "", err
 	}
-	queueID, err := a.TriggerRun(ctx, jobRef, params)
+	t, ok := a.(driven.CITriggerable)
+	if !ok {
+		return "", fmt.Errorf("backend %q does not support triggering (capabilities: %v)", a.Name(), a.Capabilities())
+	}
+	receipt, err := t.Trigger(ctx, jobRef, params)
 	if err != nil {
 		return "", err
 	}
-	buildNum, pollErr := a.PollQueue(ctx, queueID)
-	if pollErr == nil && buildNum != "" {
-		s.recordOwnership(backend, jobRef, buildNum, queueID)
-		return buildNum, nil
+	if receipt.NeedsResolve {
+		resolved, _ := t.ResolveReceipt(ctx, receipt)
+		if resolved.RunID != "" {
+			s.recordOwnership(backend, jobRef, resolved.RunID, resolved.OpaqueRef)
+			return resolved.RunID, nil
+		}
+		s.recordOwnership(backend, jobRef, resolved.OpaqueRef, resolved.OpaqueRef)
+		return resolved.OpaqueRef, nil
 	}
-	s.recordOwnership(backend, jobRef, queueID, queueID)
-	return queueID, nil
+	s.recordOwnership(backend, jobRef, receipt.RunID, receipt.OpaqueRef)
+	return receipt.RunID, nil
 }
 
 func (s *Service) CITrigger(ctx context.Context, backend, jobRef string, params map[string]string) (*domain.TriggerResult, error) {
@@ -356,22 +396,34 @@ func (s *Service) CITrigger(ctx context.Context, backend, jobRef string, params 
 	if err != nil {
 		return nil, err
 	}
-	queueID, err := a.TriggerRun(ctx, jobRef, params)
+	t, ok := a.(driven.CITriggerable)
+	if !ok {
+		return nil, fmt.Errorf("backend %q does not support triggering (capabilities: %v)", a.Name(), a.Capabilities())
+	}
+
+	receipt, err := t.Trigger(ctx, jobRef, params)
 	if err != nil {
 		return nil, err
 	}
+	// Try to resolve once — synchronous backends (GitLab) get RunID immediately;
+	// async backends (Jenkins, GitHub) need the wait action to poll.
+	if receipt.NeedsResolve {
+		resolved, _ := t.ResolveReceipt(ctx, receipt)
+		receipt = resolved
+	}
+
 	result := &domain.TriggerResult{
-		QueueID: queueID,
+		QueueID: receipt.OpaqueRef, // backward compat: OpaqueRef exposed as queue_id
 		JobRef:  jobRef,
 		Backend: backend,
 	}
-	buildNum, err := a.PollQueue(ctx, queueID)
-	if err == nil && buildNum != "" {
-		result.BuildNumber = buildNum
-		s.recordOwnership(backend, jobRef, buildNum, queueID)
+	if receipt.RunID != "" {
+		result.BuildNumber = receipt.RunID
+		s.recordOwnership(backend, jobRef, receipt.RunID, receipt.OpaqueRef)
 	}
 
-	est, _ := a.GetEstimatedDuration(ctx, jobRef)
+	// Yellow: log estimated duration for progress tracking
+	est, _ := t.EstimateDuration(ctx, jobRef)
 	if est > 0 {
 		result.EstimatedDuration = est
 		interval := est / 20
@@ -389,7 +441,11 @@ func (s *Service) CIParams(ctx context.Context, backend, jobRef, runID string) (
 	if err != nil {
 		return nil, err
 	}
-	return a.GetBuildParams(ctx, jobRef, runID)
+	h, ok := a.(driven.CIHistorical)
+	if !ok {
+		return nil, fmt.Errorf("backend %q does not support run params (capabilities: %v)", a.Name(), a.Capabilities())
+	}
+	return h.GetRunParams(ctx, jobRef, runID)
 }
 
 func (s *Service) CIHistory(ctx context.Context, backend, jobRef string, limit int) ([]domain.CIRun, error) {
@@ -400,7 +456,11 @@ func (s *Service) CIHistory(ctx context.Context, backend, jobRef string, limit i
 	if limit <= 0 {
 		limit = 10
 	}
-	return a.ListBuilds(ctx, jobRef, limit)
+	h, ok := a.(driven.CIHistorical)
+	if !ok {
+		return nil, fmt.Errorf("backend %q does not support run history (capabilities: %v)", a.Name(), a.Capabilities())
+	}
+	return h.ListRuns(ctx, jobRef, limit)
 }
 
 func (s *Service) CISearch(ctx context.Context, backend, jobRef string, f domain.BuildFilter) ([]domain.CIRun, error) {
@@ -408,7 +468,7 @@ func (s *Service) CISearch(ctx context.Context, backend, jobRef string, f domain
 	if err != nil {
 		return nil, err
 	}
-	return a.SearchBuilds(ctx, jobRef, f)
+	return a.SearchRuns(ctx, jobRef, f)
 }
 
 func (s *Service) CILog(ctx context.Context, backend, jobRef, runID string, f domain.LogFilter) (domain.LogResult, error) {
@@ -423,7 +483,7 @@ func (s *Service) CILog(ctx context.Context, backend, jobRef, runID string, f do
 		}
 		runID = check.RunID
 	}
-	raw, err := a.GetJobLog(ctx, jobRef, runID)
+	raw, err := a.GetLog(ctx, jobRef, runID, f)
 	if err != nil {
 		return domain.LogResult{}, err
 	}
@@ -482,12 +542,23 @@ func applyLogFilter(raw string, f domain.LogFilter) domain.LogResult {
 	}
 }
 
-func (s *Service) CIPoll(ctx context.Context, backend, queueID string) (string, error) {
+// CIPoll resolves an opaque trigger reference (formerly queue ID) to a run ID.
+// Creates a TriggerReceipt from the opaque ref and calls ResolveReceipt once.
+func (s *Service) CIPoll(ctx context.Context, backend, opaqueRef string) (string, error) {
 	a, err := s.adapter(backend)
 	if err != nil {
 		return "", err
 	}
-	return a.PollQueue(ctx, queueID)
+	t, ok := a.(driven.CITriggerable)
+	if !ok {
+		return "", fmt.Errorf("backend %q does not support trigger resolution", a.Name())
+	}
+	receipt := &domain.TriggerReceipt{OpaqueRef: opaqueRef, NeedsResolve: true, Backend: backend}
+	resolved, err := t.ResolveReceipt(ctx, receipt)
+	if err != nil {
+		return "", err
+	}
+	return resolved.RunID, nil
 }
 
 func (s *Service) recordOwnership(backend, jobRef, buildNumber, queueID string) {
@@ -525,12 +596,15 @@ func (s *Service) CIWatch(ctx context.Context, backend, jobRef, runID string) (*
 		return nil, err
 	}
 
-	run, err := a.PollRun(ctx, jobRef, runID)
+	run, err := a.GetRun(ctx, jobRef, runID)
 	if err != nil {
 		return nil, err
 	}
 
-	estimated, _ := a.GetEstimatedDuration(ctx, jobRef)
+	var estimated int64
+	if t, ok := a.(driven.CITriggerable); ok {
+		estimated, _ = t.EstimateDuration(ctx, jobRef)
+	}
 
 	ws := &domain.WatchStatus{
 		BuildNumber: run.ID,
@@ -549,23 +623,24 @@ func (s *Service) CIWatch(ctx context.Context, backend, jobRef, runID string) (*
 	return ws, nil
 }
 
-func (s *Service) classifyFailure(ctx context.Context, a driven.CIAdapter, jobRef, runID string, f domain.LogFilter) *domain.FailureContext {
+func (s *Service) classifyFailure(ctx context.Context, a driven.CICore, jobRef, runID string, f domain.LogFilter) *domain.FailureContext {
 	fc := &domain.FailureContext{
 		Classification: domain.FailureUnknown,
 		CanRetry:       false,
 	}
 
-	jobs, err := a.ListJobs(ctx, jobRef, runID)
-	if err == nil {
-		for _, j := range jobs {
-			if j.Status == domain.RunStatusFailure {
-				fc.FailedJob = j.Name
-				break
+	if p, ok := a.(driven.CIPipeliner); ok {
+		if stages, err := p.ListStages(ctx, jobRef, runID); err == nil {
+			for _, j := range stages {
+				if j.Status == domain.RunStatusFailure {
+					fc.FailedJob = j.Name
+					break
+				}
 			}
 		}
 	}
 
-	raw, err := a.GetJobLog(ctx, jobRef, runID)
+	raw, err := a.GetLog(ctx, jobRef, runID, f)
 	if err == nil && len(raw) > 0 {
 		fc.Log = applyLogFilter(raw, f)
 		fc.Classification, fc.CanRetry = classifyLog(strings.Join(fc.Log.Lines, "\n"))

@@ -10,7 +10,7 @@ import (
 )
 
 func TestStubCIAdapter_ContractCompliance(t *testing.T) {
-	driventest.RunCIAdapterContractTests(t, func(t *testing.T) (driven.CIAdapter, string, string) {
+	driventest.RunCIAdapterContractTests(t, func(t *testing.T) (driven.CICore, string, string) {
 		stub := driventest.NewStubCIAdapter("stub")
 		stub.RunID = "run-42"
 		stub.Run = &domain.CIRun{

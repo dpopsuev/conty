@@ -9,7 +9,7 @@ import (
 )
 
 func init() {
-	adapterdriven.Register("github", 0, func(name string, backend config.Backend) (driven.CIAdapter, error) {
+	adapterdriven.Register("github", 0, func(name string, backend config.Backend) (driven.CICore, error) {
 		token := backend.ResolveToken()
 		if token == "" {
 			token = os.Getenv("GITHUB_TOKEN")

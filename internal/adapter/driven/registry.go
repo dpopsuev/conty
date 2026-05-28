@@ -10,7 +10,7 @@ import (
 	"github.com/dpopsuev/conty/internal/port/driven"
 )
 
-type Factory func(name string, backend config.Backend) (driven.CIAdapter, error)
+type Factory func(name string, backend config.Backend) (driven.CICore, error)
 
 type entry struct {
 	name     string
@@ -42,7 +42,7 @@ func Available() []string {
 	return names
 }
 
-func CreateFromConfig(cfg *config.Config) (adapters []driven.CIAdapter, warnings []string) {
+func CreateFromConfig(cfg *config.Config) (adapters []driven.CICore, warnings []string) {
 	mu.Lock()
 	entries := make([]entry, len(registry))
 	copy(entries, registry)
@@ -64,6 +64,7 @@ func CreateFromConfig(cfg *config.Config) (adapters []driven.CIAdapter, warnings
 			if adapter != nil {
 				adapters = append(adapters, cache.New(adapter))
 			}
+
 			break
 		}
 		if !found {

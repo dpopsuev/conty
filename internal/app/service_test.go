@@ -324,9 +324,12 @@ func TestOwnership_ListOwnedRuns(t *testing.T) {
 	stub := stubAdapter()
 	svc := app.NewService(stub)
 
-	stub.QueueID = "build-1"
+	// Each trigger must produce a distinct RunID so ownership records don't overwrite.
+	stub.RunID = "build-1"
+	stub.QueueID = "q-1"
 	svc.CITrigger(context.Background(), "test", "job-a", nil)
-	stub.QueueID = "build-2"
+	stub.RunID = "build-2"
+	stub.QueueID = "q-2"
 	svc.CITrigger(context.Background(), "test", "job-b", nil)
 
 	owned := svc.ListOwnedRuns()

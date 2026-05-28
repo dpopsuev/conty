@@ -19,7 +19,14 @@ const (
 	DefaultCapacity    = 256
 )
 
-var _ driven.CIAdapter = (*Adapter)(nil)
+// compile-time assertions
+var _ driven.CICore         = (*Adapter)(nil)
+var _ driven.CITriggerable  = (*Adapter)(nil)
+var _ driven.CIHistorical   = (*Adapter)(nil)
+var _ driven.CIPipeliner    = (*Adapter)(nil)
+var _ driven.CIArtifactStore = (*Adapter)(nil)
+var _ driven.CIChainable    = (*Adapter)(nil)
+var _ driven.Unwrapper      = (*Adapter)(nil)
 
 type entry struct {
 	key       string
@@ -28,7 +35,7 @@ type entry struct {
 }
 
 type Adapter struct {
-	inner driven.CIAdapter
+	inner driven.CICore
 
 	mu       sync.Mutex
 	items    map[string]*list.Element
@@ -50,7 +57,7 @@ func WithLogTTL(d time.Duration) Option      { return func(a *Adapter) { a.logTT
 func WithArtifactTTL(d time.Duration) Option { return func(a *Adapter) { a.artifactTTL = d } }
 func WithCapacity(n int) Option              { return func(a *Adapter) { a.capacity = n } }
 
-func New(inner driven.CIAdapter, opts ...Option) *Adapter {
+func New(inner driven.CICore, opts ...Option) *Adapter {
 	a := &Adapter{
 		inner:       inner,
 		items:       make(map[string]*list.Element),
@@ -68,16 +75,14 @@ func New(inner driven.CIAdapter, opts ...Option) *Adapter {
 	return a
 }
 
-func (a *Adapter) Name() string { return a.inner.Name() }
-func (a *Adapter) Type() string { return a.inner.Type() }
+// ── CICore ───────────────────────────────────────────────────────────────────
 
-func (a *Adapter) TriggerRun(ctx context.Context, jobName string, params map[string]string) (string, error) {
-	a.invalidatePrefix(fmt.Sprintf("poll:%s:", jobName))
-	return a.inner.TriggerRun(ctx, jobName, params)
-}
+func (a *Adapter) Name() string                    { return a.inner.Name() }
+func (a *Adapter) Type() string                    { return a.inner.Type() }
+func (a *Adapter) Capabilities() driven.CapabilitySet { return a.inner.Capabilities() }
 
-func (a *Adapter) PollRun(ctx context.Context, jobName string, runID string) (*domain.CIRun, error) {
-	key := fmt.Sprintf("poll:%s:%s", jobName, runID)
+func (a *Adapter) GetRun(ctx context.Context, jobRef string, runID string) (*domain.CIRun, error) {
+	key := fmt.Sprintf("poll:%s:%s", jobRef, runID)
 
 	if v, ok := a.get(key); ok {
 		run := v.(*domain.CIRun)
@@ -86,7 +91,7 @@ func (a *Adapter) PollRun(ctx context.Context, jobName string, runID string) (*d
 		}
 	}
 
-	run, err := a.inner.PollRun(ctx, jobName, runID)
+	run, err := a.inner.GetRun(ctx, jobRef, runID)
 	if err != nil {
 		return nil, err
 	}
@@ -99,25 +104,17 @@ func (a *Adapter) PollRun(ctx context.Context, jobName string, runID string) (*d
 	return run, nil
 }
 
-func (a *Adapter) ListJobs(ctx context.Context, jobName string, runID string) ([]domain.CIJob, error) {
-	key := fmt.Sprintf("jobs:%s:%s", jobName, runID)
-	if v, ok := a.get(key); ok {
-		return v.([]domain.CIJob), nil
-	}
-	jobs, err := a.inner.ListJobs(ctx, jobName, runID)
-	if err != nil {
-		return nil, err
-	}
-	a.put(key, jobs, a.listTTL)
-	return jobs, nil
+func (a *Adapter) SearchRuns(ctx context.Context, jobRef string, f domain.BuildFilter) ([]domain.CIRun, error) {
+	// Not cached — results depend on dynamic filter criteria.
+	return a.inner.SearchRuns(ctx, jobRef, f)
 }
 
-func (a *Adapter) GetJobLog(ctx context.Context, jobName string, runID string) (string, error) {
-	key := fmt.Sprintf("log:%s:%s", jobName, runID)
+func (a *Adapter) GetLog(ctx context.Context, jobRef string, runID string, f domain.LogFilter) (string, error) {
+	key := fmt.Sprintf("log:%s:%s", jobRef, runID)
 	if v, ok := a.get(key); ok {
 		return v.(string), nil
 	}
-	log, err := a.inner.GetJobLog(ctx, jobName, runID)
+	log, err := a.inner.GetLog(ctx, jobRef, runID, f)
 	if err != nil {
 		return "", err
 	}
@@ -125,89 +122,145 @@ func (a *Adapter) GetJobLog(ctx context.Context, jobName string, runID string) (
 	return log, nil
 }
 
-func (a *Adapter) GetEstimatedDuration(ctx context.Context, jobName string) (int64, error) {
-	key := fmt.Sprintf("estdur:%s", jobName)
+func (a *Adapter) CancelRun(ctx context.Context, jobRef string, runID string) error {
+	a.invalidatePrefix(fmt.Sprintf("poll:%s:%s", jobRef, runID))
+	return a.inner.CancelRun(ctx, jobRef, runID)
+}
+
+// ── Unwrapper — exposes inner for driven.As[T] capability detection ──────────
+
+func (a *Adapter) Unwrap() driven.CICore { return a.inner }
+
+// ── CITriggerable — delegates to inner; invalidates poll cache on trigger ────
+
+func (a *Adapter) Trigger(ctx context.Context, jobRef string, params map[string]string) (*domain.TriggerReceipt, error) {
+	if t, ok := a.inner.(driven.CITriggerable); ok {
+		a.invalidatePrefix("poll:" + jobRef)
+		return t.Trigger(ctx, jobRef, params)
+	}
+	return nil, fmt.Errorf("backend %q does not support triggering (capabilities: %v)",
+		a.inner.Name(), a.inner.Capabilities())
+}
+
+func (a *Adapter) ResolveReceipt(ctx context.Context, r *domain.TriggerReceipt) (*domain.TriggerReceipt, error) {
+	if t, ok := a.inner.(driven.CITriggerable); ok {
+		return t.ResolveReceipt(ctx, r)
+	}
+	return r, fmt.Errorf("backend %q does not support trigger resolution", a.inner.Name())
+}
+
+func (a *Adapter) EstimateDuration(ctx context.Context, jobRef string) (int64, error) {
+	key := fmt.Sprintf("estdur:%s", jobRef)
 	if v, ok := a.get(key); ok {
 		return v.(int64), nil
 	}
-	d, err := a.inner.GetEstimatedDuration(ctx, jobName)
-	if err != nil {
-		return 0, err
+	if t, ok := a.inner.(driven.CITriggerable); ok {
+		d, err := t.EstimateDuration(ctx, jobRef)
+		if err != nil {
+			return 0, err
+		}
+		a.put(key, d, a.logTTL)
+		return d, nil
 	}
-	a.put(key, d, a.logTTL)
-	return d, nil
+	return 0, nil
 }
 
-func (a *Adapter) PollQueue(ctx context.Context, queueID string) (string, error) {
-	return a.inner.PollQueue(ctx, queueID)
-}
+// ── CIHistorical ─────────────────────────────────────────────────────────────
 
-func (a *Adapter) GetBuildParams(ctx context.Context, jobName string, runID string) (map[string]string, error) {
-	key := fmt.Sprintf("params:%s:%s", jobName, runID)
-	if v, ok := a.get(key); ok {
-		return v.(map[string]string), nil
-	}
-	params, err := a.inner.GetBuildParams(ctx, jobName, runID)
-	if err != nil {
-		return nil, err
-	}
-	a.put(key, params, a.logTTL)
-	return params, nil
-}
-
-func (a *Adapter) ListBuilds(ctx context.Context, jobName string, limit int) ([]domain.CIRun, error) {
-	key := fmt.Sprintf("builds:%s:%d", jobName, limit)
+func (a *Adapter) ListRuns(ctx context.Context, jobRef string, limit int) ([]domain.CIRun, error) {
+	key := fmt.Sprintf("runs:%s:%d", jobRef, limit)
 	if v, ok := a.get(key); ok {
 		return v.([]domain.CIRun), nil
 	}
-	builds, err := a.inner.ListBuilds(ctx, jobName, limit)
-	if err != nil {
-		return nil, err
+	if h, ok := a.inner.(driven.CIHistorical); ok {
+		runs, err := h.ListRuns(ctx, jobRef, limit)
+		if err != nil {
+			return nil, err
+		}
+		a.put(key, runs, a.listTTL)
+		return runs, nil
 	}
-	a.put(key, builds, a.listTTL)
-	return builds, nil
+	return nil, fmt.Errorf("backend %q does not support run history", a.inner.Name())
 }
 
-// SearchBuilds is not cached — results depend on dynamic filter criteria.
-func (a *Adapter) SearchBuilds(ctx context.Context, jobName string, f domain.BuildFilter) ([]domain.CIRun, error) {
-	return a.inner.SearchBuilds(ctx, jobName, f)
+func (a *Adapter) GetRunParams(ctx context.Context, jobRef, runID string) (map[string]string, error) {
+	key := fmt.Sprintf("params:%s:%s", jobRef, runID)
+	if v, ok := a.get(key); ok {
+		return v.(map[string]string), nil
+	}
+	if h, ok := a.inner.(driven.CIHistorical); ok {
+		params, err := h.GetRunParams(ctx, jobRef, runID)
+		if err != nil {
+			return nil, err
+		}
+		a.put(key, params, a.logTTL)
+		return params, nil
+	}
+	return nil, fmt.Errorf("backend %q does not support run params", a.inner.Name())
 }
 
-func (a *Adapter) ListArtifacts(ctx context.Context, jobName string, runID string) ([]domain.CIArtifact, error) {
-	key := fmt.Sprintf("artifacts:%s:%s", jobName, runID)
+// ── CIPipeliner ──────────────────────────────────────────────────────────────
+
+func (a *Adapter) ListStages(ctx context.Context, jobRef, runID string) ([]domain.CIJob, error) {
+	key := fmt.Sprintf("stages:%s:%s", jobRef, runID)
+	if v, ok := a.get(key); ok {
+		return v.([]domain.CIJob), nil
+	}
+	if p, ok := a.inner.(driven.CIPipeliner); ok {
+		stages, err := p.ListStages(ctx, jobRef, runID)
+		if err != nil {
+			return nil, err
+		}
+		a.put(key, stages, a.listTTL)
+		return stages, nil
+	}
+	return nil, fmt.Errorf("backend %q does not support pipeline stages", a.inner.Name())
+}
+
+// ── CIArtifactStore ──────────────────────────────────────────────────────────
+
+func (a *Adapter) ListArtifacts(ctx context.Context, jobRef, runID string) ([]domain.CIArtifact, error) {
+	key := fmt.Sprintf("artifacts:%s:%s", jobRef, runID)
 	if v, ok := a.get(key); ok {
 		return v.([]domain.CIArtifact), nil
 	}
-	artifacts, err := a.inner.ListArtifacts(ctx, jobName, runID)
-	if err != nil {
-		return nil, err
+	if s, ok := a.inner.(driven.CIArtifactStore); ok {
+		artifacts, err := s.ListArtifacts(ctx, jobRef, runID)
+		if err != nil {
+			return nil, err
+		}
+		a.put(key, artifacts, a.artifactTTL)
+		return artifacts, nil
 	}
-	a.put(key, artifacts, a.artifactTTL)
-	return artifacts, nil
+	return nil, fmt.Errorf("backend %q does not support artifacts", a.inner.Name())
 }
 
-func (a *Adapter) CancelRun(ctx context.Context, jobName string, runID string) error {
-	a.invalidatePrefix(fmt.Sprintf("poll:%s:%s", jobName, runID))
-	return a.inner.CancelRun(ctx, jobName, runID)
-}
-
-// GetDownstreamRuns is not cached — results are time-sensitive and filter-dependent.
-func (a *Adapter) GetDownstreamRuns(ctx context.Context, downstreamJob, upstreamJob, upstreamRunID string) ([]domain.CIRun, error) {
-	return a.inner.GetDownstreamRuns(ctx, downstreamJob, upstreamJob, upstreamRunID)
-}
-
-func (a *Adapter) GetArtifact(ctx context.Context, jobName string, runID string, path string) ([]byte, error) {
-	key := fmt.Sprintf("artifact:%s:%s:%s", jobName, runID, path)
+func (a *Adapter) GetArtifact(ctx context.Context, jobRef, runID, path string) ([]byte, error) {
+	key := fmt.Sprintf("artifact:%s:%s:%s", jobRef, runID, path)
 	if v, ok := a.get(key); ok {
 		return v.([]byte), nil
 	}
-	data, err := a.inner.GetArtifact(ctx, jobName, runID, path)
-	if err != nil {
-		return nil, err
+	if s, ok := a.inner.(driven.CIArtifactStore); ok {
+		data, err := s.GetArtifact(ctx, jobRef, runID, path)
+		if err != nil {
+			return nil, err
+		}
+		a.put(key, data, a.artifactTTL)
+		return data, nil
 	}
-	a.put(key, data, a.artifactTTL)
-	return data, nil
+	return nil, fmt.Errorf("backend %q does not support artifact download", a.inner.Name())
 }
+
+// ── CIChainable — not cached (time-sensitive, filter-dependent) ───────────────
+
+func (a *Adapter) GetDownstreamRuns(ctx context.Context, downstreamJob, upstreamJob, upstreamRunID string) ([]domain.CIRun, error) {
+	if c, ok := a.inner.(driven.CIChainable); ok {
+		return c.GetDownstreamRuns(ctx, downstreamJob, upstreamJob, upstreamRunID)
+	}
+	return nil, fmt.Errorf("backend %q does not support chain traversal", a.inner.Name())
+}
+
+// ── LRU cache internals ───────────────────────────────────────────────────────
 
 func (a *Adapter) get(key string) (any, bool) {
 	a.mu.Lock()
