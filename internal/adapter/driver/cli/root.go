@@ -98,12 +98,13 @@ func newServiceFromConfig() (*app.Service, error) {
 		return nil, err
 	}
 
-	adapters, warnings := adapterdriven.CreateFromConfig(cfg)
+	adapters, unconfigured, warnings := adapterdriven.CreateFromConfig(cfg)
 	for _, w := range warnings {
 		fmt.Fprintln(os.Stderr, "warning:", w)
 	}
 
 	svc := app.NewService(adapters...)
+	svc.RegisterUnconfigured(unconfigured)
 
 	for name, pcfg := range cfg.Pipelines {
 		steps := make([]domain.PipelineStep, len(pcfg.Steps))

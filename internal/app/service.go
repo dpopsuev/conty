@@ -21,11 +21,12 @@ var (
 )
 
 type Service struct {
-	adapters  map[string]driven.CICore
-	pipelines map[string]domain.Pipeline
-	runs      map[string]*domain.PipelineRun
-	owned     map[string]domain.OwnedRun
-	mu        sync.RWMutex
+	adapters     map[string]driven.CICore
+	unconfigured []domain.BackendInfo
+	pipelines    map[string]domain.Pipeline
+	runs         map[string]*domain.PipelineRun
+	owned        map[string]domain.OwnedRun
+	mu           sync.RWMutex
 }
 
 func NewService(adapters ...driven.CICore) *Service {
@@ -45,6 +46,12 @@ func (s *Service) AddAdapter(a driven.CICore) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.adapters[a.Name()] = a
+}
+
+func (s *Service) RegisterUnconfigured(infos []domain.BackendInfo) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.unconfigured = append(s.unconfigured, infos...)
 }
 
 func (s *Service) RegisterPipeline(p domain.Pipeline) {
@@ -201,12 +208,19 @@ func (s *Service) ListPipelines() []string {
 func (s *Service) BackendInfo() []domain.BackendInfo {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	infos := make([]domain.BackendInfo, 0, len(s.adapters))
+	infos := make([]domain.BackendInfo, 0, len(s.adapters)+len(s.unconfigured))
 	for _, a := range s.adapters {
 		infos = append(infos, domain.BackendInfo{
 			Name:         a.Name(),
 			Type:         a.Type(),
 			Capabilities: a.Capabilities().String(),
+		})
+	}
+	for _, u := range s.unconfigured {
+		infos = append(infos, domain.BackendInfo{
+			Name:         u.Name,
+			Type:         u.Type,
+			Capabilities: "unconfigured",
 		})
 	}
 	return infos

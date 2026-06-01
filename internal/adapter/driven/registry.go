@@ -7,6 +7,7 @@ import (
 
 	"github.com/dpopsuev/conty/internal/adapter/driven/cache"
 	"github.com/dpopsuev/conty/internal/config"
+	"github.com/dpopsuev/conty/internal/domain"
 	"github.com/dpopsuev/conty/internal/port/driven"
 )
 
@@ -42,7 +43,7 @@ func Available() []string {
 	return names
 }
 
-func CreateFromConfig(cfg *config.Config) (adapters []driven.CICore, warnings []string) {
+func CreateFromConfig(cfg *config.Config) (adapters []driven.CICore, unconfigured []domain.BackendInfo, warnings []string) {
 	mu.Lock()
 	entries := make([]entry, len(registry))
 	copy(entries, registry)
@@ -63,13 +64,14 @@ func CreateFromConfig(cfg *config.Config) (adapters []driven.CICore, warnings []
 			}
 			if adapter != nil {
 				adapters = append(adapters, cache.New(adapter))
+			} else {
+				unconfigured = append(unconfigured, domain.BackendInfo{Name: name, Type: backendType})
 			}
-
 			break
 		}
 		if !found {
 			warnings = append(warnings, fmt.Sprintf("unknown backend type %q for %q", backendType, name))
 		}
 	}
-	return adapters, warnings
+	return adapters, unconfigured, warnings
 }
