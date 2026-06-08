@@ -5,8 +5,12 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/dpopsuev/conty/internal/domain"
 )
 
 // buildPayload constructs a minimal Jenkins build JSON entry with a single upstream cause.
@@ -172,6 +176,166 @@ func TestMapCauses_FirstUpstreamWins(t *testing.T) {
 	uj, uri := mapCauses(actions)
 	if uj != "job-a" || uri != "100" {
 		t.Errorf("expected first cause to win: got %q %q", uj, uri)
+	}
+}
+
+// --- parseChildrenFromDescription ---
+
+func TestParseChildrenFromDescription_Empty(t *testing.T) {
+	if got := parseChildrenFromDescription(""); got != nil {
+		t.Errorf("expected nil for empty description, got %v", got)
+	}
+}
+
+func TestParseChildrenFromDescription_NoLinks(t *testing.T) {
+	if got := parseChildrenFromDescription("Started by upstream project CI/foo build number 42"); got != nil {
+		t.Errorf("expected nil when no job links present, got %v", got)
+	}
+}
+
+func TestParseChildrenFromDescription_SingleChildRelative(t *testing.T) {
+	desc := `<a href='/job/CI/job/ocp-far-edge-vran-tests/6665/'>ocp-far-edge-vran-tests #6665</a>`
+	got := parseChildrenFromDescription(desc)
+	if len(got) != 1 {
+		t.Fatalf("expected 1 child, got %d: %v", len(got), got)
+	}
+	if got[0].JobRef != "CI/ocp-far-edge-vran-tests" {
+		t.Errorf("JobRef = %q, want %q", got[0].JobRef, "CI/ocp-far-edge-vran-tests")
+	}
+	if got[0].RunID != "6665" {
+		t.Errorf("RunID = %q, want %q", got[0].RunID, "6665")
+	}
+}
+
+func TestParseChildrenFromDescription_SingleChildAbsoluteURL(t *testing.T) {
+	desc := `<a href="https://jenkins-csb-kniqe-ci.dno.corp.redhat.com/job/CI/job/ocp-far-edge-vran-tests/6665/">link</a>`
+	got := parseChildrenFromDescription(desc)
+	if len(got) != 1 {
+		t.Fatalf("expected 1 child, got %d: %v", len(got), got)
+	}
+	if got[0].JobRef != "CI/ocp-far-edge-vran-tests" {
+		t.Errorf("JobRef = %q, want %q", got[0].JobRef, "CI/ocp-far-edge-vran-tests")
+	}
+	if got[0].RunID != "6665" {
+		t.Errorf("RunID = %q, want %q", got[0].RunID, "6665")
+	}
+}
+
+func TestParseChildrenFromDescription_MultipleChildren(t *testing.T) {
+	desc := `<a href='/job/CI/job/ocp-far-edge-vran-tests/6665/'>tests</a>, ` +
+		`<a href='/job/CI/job/ocp-far-edge-vran-collect/1234/'>collect</a>`
+	got := parseChildrenFromDescription(desc)
+	if len(got) != 2 {
+		t.Fatalf("expected 2 children, got %d: %v", len(got), got)
+	}
+}
+
+func TestParseChildrenFromDescription_Deduplication(t *testing.T) {
+	desc := `<a href='/job/CI/job/ocp-far-edge-vran-tests/6665/'>a</a> ` +
+		`<a href='/job/CI/job/ocp-far-edge-vran-tests/6665/'>b</a>`
+	got := parseChildrenFromDescription(desc)
+	if len(got) != 1 {
+		t.Errorf("expected duplicate links to be deduplicated, got %d: %v", len(got), got)
+	}
+}
+
+func TestParseChildrenFromDescription_TopLevelJob(t *testing.T) {
+	desc := `<a href='/job/ocp-far-edge-vran-tests/6665/'>tests</a>`
+	got := parseChildrenFromDescription(desc)
+	if len(got) != 1 {
+		t.Fatalf("expected 1 child, got %d", len(got))
+	}
+	if got[0].JobRef != "ocp-far-edge-vran-tests" {
+		t.Errorf("JobRef = %q, want %q", got[0].JobRef, "ocp-far-edge-vran-tests")
+	}
+}
+
+func TestParseChildrenFromDescription_IgnoresNonBuildLinks(t *testing.T) {
+	// href points to a job overview page (no build number) — must be ignored.
+	desc := `<a href='/job/CI/job/ocp-far-edge-vran-tests/'>job index</a>`
+	got := parseChildrenFromDescription(desc)
+	if len(got) != 0 {
+		t.Errorf("expected 0 children for job-index link, got %d: %v", len(got), got)
+	}
+}
+
+// --- SearchRuns ---
+
+func searchRunsPayload(builds []map[string]any) map[string]any {
+	return map[string]any{"builds": builds}
+}
+
+func buildSearchEntry(number int, result string, tsMs int64, description string) map[string]any {
+	return map[string]any{
+		"number":          number,
+		"result":          result,
+		"fullDisplayName": "job #" + strconv.Itoa(number),
+		"timestamp":       tsMs,
+		"duration":        int64(60000),
+		"url":             "http://jenkins/job/test/" + strconv.Itoa(number) + "/",
+		"building":        false,
+		"description":     description,
+		"culprits":        []any{},
+		"actions":         []any{},
+	}
+}
+
+func TestSearchRuns_SinceBreaksEarly(t *testing.T) {
+	// Build 300 is at T+300s (newest), build 100 is at T+100s, build 50 is at T+50s.
+	// Since = T+200s → only build 300 qualifies.
+	// Critically, once we see build 100 (before Since), we must stop iterating —
+	// build 50 must never be evaluated.
+	base := int64(1700000000000)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(searchRunsPayload([]map[string]any{
+			buildSearchEntry(300, "SUCCESS", base+300000, ""),
+			buildSearchEntry(100, "SUCCESS", base+100000, ""),
+			buildSearchEntry(50, "FAILURE", base+50000, ""), // must not appear even if FAILURE matches
+		}))
+	}))
+	defer srv.Close()
+
+	a := &Adapter{name: "test", baseURL: srv.URL, user: "u", token: "t"}
+	since := time.UnixMilli(base + 200000)
+	runs, err := a.SearchRuns(context.Background(), "my-job", domain.BuildFilter{Since: since})
+	if err != nil {
+		t.Fatalf("SearchRuns: %v", err)
+	}
+	if len(runs) != 1 {
+		t.Fatalf("expected 1 run (build 300), got %d: %v", len(runs), runs)
+	}
+	if runs[0].ID != "300" {
+		t.Errorf("expected build 300, got %q", runs[0].ID)
+	}
+}
+
+func TestSearchRuns_DescriptionChildren(t *testing.T) {
+	desc := `<a href='/job/CI/job/ocp-far-edge-vran-tests/6665/'>tests</a>`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(searchRunsPayload([]map[string]any{
+			buildSearchEntry(42, "SUCCESS", 1700000000000, desc),
+		}))
+	}))
+	defer srv.Close()
+
+	a := &Adapter{name: "test", baseURL: srv.URL, user: "u", token: "t"}
+	runs, err := a.SearchRuns(context.Background(), "my-job", domain.BuildFilter{})
+	if err != nil {
+		t.Fatalf("SearchRuns: %v", err)
+	}
+	if len(runs) != 1 {
+		t.Fatalf("expected 1 run, got %d", len(runs))
+	}
+	if len(runs[0].Children) != 1 {
+		t.Fatalf("expected 1 child, got %d", len(runs[0].Children))
+	}
+	if runs[0].Children[0].JobRef != "CI/ocp-far-edge-vran-tests" {
+		t.Errorf("child JobRef = %q, want %q", runs[0].Children[0].JobRef, "CI/ocp-far-edge-vran-tests")
+	}
+	if runs[0].Children[0].RunID != "6665" {
+		t.Errorf("child RunID = %q, want %q", runs[0].Children[0].RunID, "6665")
 	}
 }
 
