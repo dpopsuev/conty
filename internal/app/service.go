@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -504,14 +505,28 @@ func (s *Service) CILog(ctx context.Context, backend, jobRef, runID string, f do
 	return applyLogFilter(raw, f), nil
 }
 
+// compileGrepPattern compiles f.Grep as a case-insensitive regexp.
+// Falls back to a literal substring match when the pattern is not valid regexp.
+func compileGrepPattern(pattern string) func(string) bool {
+	re, err := regexp.Compile("(?i)" + pattern)
+	if err != nil {
+		// Invalid regexp — treat as a literal, case-insensitive substring.
+		lower := strings.ToLower(pattern)
+		return func(line string) bool {
+			return strings.Contains(strings.ToLower(line), lower)
+		}
+	}
+	return re.MatchString
+}
+
 func applyLogFilter(raw string, f domain.LogFilter) domain.LogResult {
 	lines := strings.Split(raw, "\n")
 
 	if f.Grep != "" {
-		pattern := strings.ToLower(f.Grep)
+		match := compileGrepPattern(f.Grep)
 		matched := lines[:0]
 		for _, l := range lines {
-			if strings.Contains(strings.ToLower(l), pattern) {
+			if match(l) {
 				matched = append(matched, l)
 			}
 		}
@@ -521,7 +536,9 @@ func applyLogFilter(raw string, f domain.LogFilter) domain.LogResult {
 	totalLines := len(lines)
 
 	tail := f.Tail
-	if tail == 0 {
+	// When grep is set, omit the default tail so all matching lines are returned.
+	// The caller can pass an explicit Tail to cap the result.
+	if tail == 0 && f.Grep == "" {
 		tail = domain.LogDefaultTail
 	}
 
