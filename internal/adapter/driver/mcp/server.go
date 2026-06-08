@@ -424,6 +424,13 @@ func handleHelp(svc ContyService) (tool.Result, error) {
 	fmt.Fprintln(&b, "  status(grep=error)       — failure context in one call")
 	fmt.Fprintln(&b, "  log(grep=fatal|error)    — targeted line search without status overhead")
 	fmt.Fprintln(&b, "  trigger → wait → status  — full deploy-and-diagnose flow")
+	fmt.Fprintln(&b)
+	fmt.Fprintln(&b, "Notes:")
+	fmt.Fprintln(&b, "  log fetches the full consoleText before applying grep/tail (Jenkins API limitation).")
+	fmt.Fprintln(&b, "  For 400k+ byte logs use grep= to reduce returned lines, but expect a slow first fetch.")
+	fmt.Fprintln(&b, "  Child build IDs (job_ref, run_id) appear in the 'children' field of status/search")
+	fmt.Fprintln(&b, "  results when Jenkins encodes them in the description HTML. Use artifact or log")
+	fmt.Fprintln(&b, "  directly with those job_ref/run_id values, or use downstream for explicit lookup.")
 
 	return tool.TextResult(b.String()), nil
 }

@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -19,6 +20,62 @@ import (
 )
 
 const BackendName = "jenkins"
+
+// descriptionString safely converts the gojenkins Raw.Description interface{} value to string.
+func descriptionString(v interface{}) string {
+	s, _ := v.(string)
+	return s
+}
+
+// hrefRe matches href attributes in HTML, capturing the URL value.
+var hrefRe = regexp.MustCompile(`href=['"]([^'"]+)['"]`)
+
+// parseChildrenFromDescription extracts child job/run pairs from a Jenkins build
+// description field. Jenkins encodes triggered downstream builds as HTML anchor
+// elements whose href follows the /job/A/job/B/NNN/ pattern. The description
+// field is not machine-readable in the standard API; this is the only way to
+// discover which child build numbers were produced by a parent pipeline build.
+func parseChildrenFromDescription(desc string) []domain.CIRunRef {
+	if desc == "" {
+		return nil
+	}
+	var results []domain.CIRunRef
+	seen := map[string]bool{}
+	for _, m := range hrefRe.FindAllStringSubmatch(desc, -1) {
+		href := m[1]
+		// Strip scheme+host from absolute URLs, keep path only.
+		if idx := strings.Index(href, "/job/"); idx > 0 {
+			href = href[idx:]
+		}
+		// Parse /job/A/job/B/.../NNN[/] into jobRef="A/B/..." and runID="NNN".
+		segments := strings.Split(strings.Trim(href, "/"), "/")
+		var jobParts []string
+		var runID string
+		for i, s := range segments {
+			if s == "job" {
+				continue
+			}
+			if i > 0 && segments[i-1] == "job" {
+				jobParts = append(jobParts, s)
+			} else if _, err := strconv.Atoi(s); err == nil {
+				runID = s
+			}
+		}
+		if len(jobParts) == 0 || runID == "" {
+			continue
+		}
+		key := strings.Join(jobParts, "/") + "/" + runID
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		results = append(results, domain.CIRunRef{
+			JobRef: strings.Join(jobParts, "/"),
+			RunID:  runID,
+		})
+	}
+	return results
+}
 
 var _ driven.CICore         = (*Adapter)(nil)
 var _ driven.CITriggerable  = (*Adapter)(nil)
@@ -542,6 +599,7 @@ func (a *Adapter) mapBuild(ctx context.Context, b *gojenkins.Build) *domain.CIRu
 		Duration:      int64(b.GetDuration()),
 		UpstreamJob:   upstreamJob,
 		UpstreamRunID: upstreamRunID,
+		Children:      parseChildrenFromDescription(descriptionString(b.Raw.Description)),
 	}
 }
 
@@ -660,13 +718,14 @@ func (a *Adapter) SearchRuns(ctx context.Context, jobName string, f domain.Build
 			break
 		}
 
-		// Result filter
-		if f.Result != "" && !strings.EqualFold(b.Result, f.Result) {
-			continue
+		// Since filter — Jenkins returns builds newest-first, so the first build
+		// before f.Since means all remaining builds are also before it.
+		if !f.Since.IsZero() && time.UnixMilli(b.Timestamp).Before(f.Since) {
+			break
 		}
 
-		// Since filter
-		if !f.Since.IsZero() && time.UnixMilli(b.Timestamp).Before(f.Since) {
+		// Result filter
+		if f.Result != "" && !strings.EqualFold(b.Result, f.Result) {
 			continue
 		}
 
@@ -746,6 +805,7 @@ func (a *Adapter) SearchRuns(ctx context.Context, jobName string, f domain.Build
 			Duration:      b.Duration,
 			UpstreamJob:   upstreamJob,
 			UpstreamRunID: upstreamRunID,
+			Children:      parseChildrenFromDescription(b.Description),
 		})
 	}
 
