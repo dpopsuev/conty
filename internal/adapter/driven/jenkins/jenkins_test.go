@@ -338,6 +338,100 @@ func TestSearchRuns_DescriptionChildren(t *testing.T) {
 	}
 }
 
+func TestSearchRuns_Paginates(t *testing.T) {
+	// First page (offset 0): 50 builds all after since.
+	// Second page (offset 50): 3 builds — 2 after since, then 1 before (triggers stop).
+	// Expect 52 results and exactly 2 HTTP requests.
+	base := int64(1700000000000)
+	since := time.UnixMilli(base)
+	reqCount := 0
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reqCount++
+		w.Header().Set("Content-Type", "application/json")
+		var builds []map[string]any
+		switch reqCount {
+		case 1:
+			// Full page — all after since.
+			for i := range searchPageSize {
+				builds = append(builds, buildSearchEntry(1000+i, "SUCCESS", base+int64((searchPageSize-i)*1000), ""))
+			}
+		case 2:
+			builds = []map[string]any{
+				buildSearchEntry(51, "SUCCESS", base+2000, ""),
+				buildSearchEntry(50, "SUCCESS", base+1000, ""),
+				buildSearchEntry(49, "SUCCESS", base-1000, ""), // before since — must stop here
+			}
+		}
+		_ = json.NewEncoder(w).Encode(searchRunsPayload(builds))
+	}))
+	defer srv.Close()
+
+	a := &Adapter{name: "test", baseURL: srv.URL, user: "u", token: "t"}
+	runs, err := a.SearchRuns(context.Background(), "my-job", domain.BuildFilter{Since: since, Limit: 100})
+	if err != nil {
+		t.Fatalf("SearchRuns: %v", err)
+	}
+	if reqCount != 2 {
+		t.Errorf("expected 2 HTTP requests (2 pages), got %d", reqCount)
+	}
+	if len(runs) != 52 {
+		t.Errorf("expected 52 runs (50 + 2), got %d", len(runs))
+	}
+}
+
+func buildSearchEntryWithParams(number int, result string, tsMs int64, params map[string]string) map[string]any {
+	actions := []any{}
+	if len(params) > 0 {
+		paramList := []any{}
+		for k, v := range params {
+			paramList = append(paramList, map[string]any{"name": k, "value": v})
+		}
+		actions = append(actions, map[string]any{"parameters": paramList})
+	}
+	return map[string]any{
+		"number":          number,
+		"result":          result,
+		"fullDisplayName": "job #" + strconv.Itoa(number),
+		"timestamp":       tsMs,
+		"duration":        int64(60000),
+		"url":             "http://jenkins/job/test/" + strconv.Itoa(number) + "/",
+		"building":        false,
+		"description":     "",
+		"culprits":        []any{},
+		"actions":         actions,
+	}
+}
+
+func TestSearchRuns_ParamsFilter(t *testing.T) {
+	// Build 3: ENV=prod, REGION=us-east  → matches both
+	// Build 2: ENV=staging, REGION=us-east → no match (wrong ENV)
+	// Build 1: ENV=prod, REGION=eu-west   → no match (wrong REGION)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(searchRunsPayload([]map[string]any{
+			buildSearchEntryWithParams(3, "SUCCESS", 1700000003000, map[string]string{"ENV": "prod", "REGION": "us-east"}),
+			buildSearchEntryWithParams(2, "SUCCESS", 1700000002000, map[string]string{"ENV": "staging", "REGION": "us-east"}),
+			buildSearchEntryWithParams(1, "SUCCESS", 1700000001000, map[string]string{"ENV": "prod", "REGION": "eu-west"}),
+		}))
+	}))
+	defer srv.Close()
+
+	a := &Adapter{name: "test", baseURL: srv.URL, user: "u", token: "t"}
+	runs, err := a.SearchRuns(context.Background(), "my-job", domain.BuildFilter{
+		Params: map[string]string{"ENV": "prod", "REGION": "us-east"},
+	})
+	if err != nil {
+		t.Fatalf("SearchRuns: %v", err)
+	}
+	if len(runs) != 1 {
+		t.Fatalf("expected 1 matching run, got %d: %v", len(runs), runs)
+	}
+	if runs[0].ID != "3" {
+		t.Errorf("expected build 3, got %q", runs[0].ID)
+	}
+}
+
 func TestNew_NoNetworkRequired(t *testing.T) {
 	// New must succeed even when the Jenkins host is unreachable.
 	// The old Init probe would fail here; lazy init must not.

@@ -659,24 +659,72 @@ type buildWithParams struct {
 	Actions         []buildAction `json:"actions"`
 }
 
+// searchPageSize is the number of builds fetched per Jenkins API page in SearchRuns.
+const searchPageSize = 50
+
+// searchMaxPages caps the total pages fetched to prevent runaway loops on
+// unbounded searches (no since, rare params match).
+const searchMaxPages = 200
+
 func (a *Adapter) SearchRuns(ctx context.Context, jobName string, f domain.BuildFilter) ([]domain.CIRun, error) {
 	start := time.Now()
 	limit := f.Limit
 	if limit <= 0 {
 		limit = 20
 	}
-	// Fetch 3x limit as a buffer since we filter client-side.
-	fetch := limit * 3
-	if fetch < 50 {
-		fetch = 50
+
+	adapterdriven.LogOp(ctx, a.name, "search_runs",
+		slog.String(adapterdriven.LogKeyID, jobName),
+		slog.Int("limit", limit))
+
+	var runs []domain.CIRun
+	for page := range searchMaxPages {
+		offset := page * searchPageSize
+		builds, err := a.fetchSearchPage(ctx, jobName, offset, searchPageSize)
+		if err != nil {
+			adapterdriven.LogError(ctx, a.name, "search_runs", err)
+			return nil, err
+		}
+
+		done := false
+		for _, b := range builds {
+			if len(runs) >= limit {
+				done = true
+				break
+			}
+			// Jenkins returns builds newest-first. The first build before f.Since
+			// means all remaining builds are also before it.
+			if !f.Since.IsZero() && time.UnixMilli(b.Timestamp).Before(f.Since) {
+				done = true
+				break
+			}
+			run, ok := a.filterAndMapBuild(ctx, jobName, b, f)
+			if !ok {
+				continue
+			}
+			runs = append(runs, run)
+		}
+
+		if done || len(builds) < searchPageSize {
+			break
+		}
 	}
 
+	adapterdriven.LogOpDone(ctx, a.name, "search_runs",
+		slog.Duration(adapterdriven.LogKeyElapsed, time.Since(start)),
+		slog.Int(adapterdriven.LogKeyCount, len(runs)))
+	return runs, nil
+}
+
+// fetchSearchPage fetches one page of builds from the Jenkins API.
+// offset and count map to the Jenkins tree range {offset, offset+count}.
+func (a *Adapter) fetchSearchPage(ctx context.Context, jobName string, offset, count int) ([]buildWithParams, error) {
 	jobPath := buildJobPath(jobName)
 	treeParam := fmt.Sprintf(
 		"builds[number,result,fullDisplayName,timestamp,duration,estimatedDuration,url,building,description,"+
 			"culprits[id,fullName],"+
-			"actions[parameters[name,value],causes[userId,userName,shortDescription,upstreamBuild,upstreamProject],text]]{0,%d}",
-		fetch,
+			"actions[parameters[name,value],causes[userId,userName,shortDescription,upstreamBuild,upstreamProject],text]]{%d,%d}",
+		offset, offset+count,
 	)
 	apiURL := strings.TrimRight(a.baseURL, "/") + jobPath + "/api/json?tree=" + treeParam
 
@@ -688,7 +736,6 @@ func (a *Adapter) SearchRuns(ctx context.Context, jobName string, f domain.Build
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		adapterdriven.LogError(ctx, a.name, "search_runs", err)
 		return nil, err
 	}
 	defer resp.Body.Close()
@@ -708,108 +755,88 @@ func (a *Adapter) SearchRuns(ctx context.Context, jobName string, f domain.Build
 	if err := json.Unmarshal(body, &payload); err != nil {
 		return nil, fmt.Errorf("search_builds decode: %w", err)
 	}
+	return payload.Builds, nil
+}
 
-	var runs []domain.CIRun
-	for _, b := range payload.Builds {
-		if len(runs) >= limit {
-			break
-		}
-
-		// Since filter — Jenkins returns builds newest-first, so the first build
-		// before f.Since means all remaining builds are also before it.
-		if !f.Since.IsZero() && time.UnixMilli(b.Timestamp).Before(f.Since) {
-			break
-		}
-
-		// Result filter
-		if f.Result != "" && !strings.EqualFold(b.Result, f.Result) {
-			continue
-		}
-
-		// Runner filter — match userId or userName from causes
-		if f.Runner != "" {
-			matched := false
-			for _, action := range b.Actions {
-				for _, cause := range action.Causes {
-					if strings.EqualFold(cause.UserID, f.Runner) || strings.EqualFold(cause.UserName, f.Runner) {
-						matched = true
-					}
-				}
-			}
-			if !matched {
-				continue
-			}
-		}
-
-		// Params filter — collect all params from all actions
-		if len(f.Params) > 0 {
-			got := map[string]string{}
-			for _, action := range b.Actions {
-				for _, p := range action.Parameters {
-					got[p.Name] = fmt.Sprintf("%v", p.Value)
-				}
-			}
-			match := true
-			for k, v := range f.Params {
-				if got[k] != v {
-					match = false
-					break
-				}
-			}
-			if !match {
-				continue
-			}
-		}
-
-		status := domain.RunStatusSuccess
-		switch {
-		case b.Building:
-			status = domain.RunStatusRunning
-		case b.Result == "FAILURE":
-			status = domain.RunStatusFailure
-		case b.Result == "ABORTED":
-			status = domain.RunStatusAborted
-		case b.Result == "":
-			status = domain.RunStatusPending
-		}
-
-		// Orange: warn on malformed upstream causes (project set but build number absent).
-		for _, action := range b.Actions {
-			for _, c := range action.Causes {
-				if c.UpstreamProject != "" && c.UpstreamBuild == 0 {
-					slog.LogAttrs(ctx, slog.LevelWarn, "upstream cause missing build number",
-						slog.String("upstream_project", c.UpstreamProject),
-						slog.Int64("build_number", b.Number))
-				}
-			}
-		}
-		upstreamJob, upstreamRunID := mapCauses(b.Actions)
-		// Yellow: log upstream mapping when present.
-		if upstreamJob != "" {
-			slog.LogAttrs(ctx, slog.LevelDebug, "upstream cause mapped",
-				slog.String("job", jobName),
-				slog.Int64("build", b.Number),
-				slog.String("upstream_job", upstreamJob),
-				slog.String("upstream_run_id", upstreamRunID))
-		}
-		runs = append(runs, domain.CIRun{
-			ID:            strconv.FormatInt(b.Number, 10),
-			Name:          b.FullDisplayName,
-			Status:        status,
-			Result:        domain.RunResult(b.Result),
-			URL:           b.URL,
-			StartedAt:     time.UnixMilli(b.Timestamp),
-			Duration:      b.Duration,
-			UpstreamJob:   upstreamJob,
-			UpstreamRunID: upstreamRunID,
-			Children:      parseChildrenFromDescription(b.Description),
-		})
+// filterAndMapBuild applies result, runner, and params filters to a build and
+// maps it to a domain.CIRun. Returns (run, false) if the build is filtered out.
+func (a *Adapter) filterAndMapBuild(ctx context.Context, jobName string, b buildWithParams, f domain.BuildFilter) (domain.CIRun, bool) {
+	// Result filter
+	if f.Result != "" && !strings.EqualFold(b.Result, f.Result) {
+		return domain.CIRun{}, false
 	}
 
-	adapterdriven.LogOpDone(ctx, a.name, "search_runs",
-		slog.Duration(adapterdriven.LogKeyElapsed, time.Since(start)),
-		slog.Int(adapterdriven.LogKeyCount, len(runs)))
-	return runs, nil
+	// Runner filter — match userId or userName from causes
+	if f.Runner != "" {
+		matched := false
+		for _, action := range b.Actions {
+			for _, cause := range action.Causes {
+				if strings.EqualFold(cause.UserID, f.Runner) || strings.EqualFold(cause.UserName, f.Runner) {
+					matched = true
+				}
+			}
+		}
+		if !matched {
+			return domain.CIRun{}, false
+		}
+	}
+
+	// Params filter — all specified key=value pairs must match
+	if len(f.Params) > 0 {
+		got := map[string]string{}
+		for _, action := range b.Actions {
+			for _, p := range action.Parameters {
+				got[p.Name] = fmt.Sprintf("%v", p.Value)
+			}
+		}
+		for k, v := range f.Params {
+			if got[k] != v {
+				return domain.CIRun{}, false
+			}
+		}
+	}
+
+	status := domain.RunStatusSuccess
+	switch {
+	case b.Building:
+		status = domain.RunStatusRunning
+	case b.Result == "FAILURE":
+		status = domain.RunStatusFailure
+	case b.Result == "ABORTED":
+		status = domain.RunStatusAborted
+	case b.Result == "":
+		status = domain.RunStatusPending
+	}
+
+	for _, action := range b.Actions {
+		for _, c := range action.Causes {
+			if c.UpstreamProject != "" && c.UpstreamBuild == 0 {
+				slog.LogAttrs(ctx, slog.LevelWarn, "upstream cause missing build number",
+					slog.String("upstream_project", c.UpstreamProject),
+					slog.Int64("build_number", b.Number))
+			}
+		}
+	}
+	upstreamJob, upstreamRunID := mapCauses(b.Actions)
+	if upstreamJob != "" {
+		slog.LogAttrs(ctx, slog.LevelDebug, "upstream cause mapped",
+			slog.String("job", jobName),
+			slog.Int64("build", b.Number),
+			slog.String("upstream_job", upstreamJob),
+			slog.String("upstream_run_id", upstreamRunID))
+	}
+	return domain.CIRun{
+		ID:            strconv.FormatInt(b.Number, 10),
+		Name:          b.FullDisplayName,
+		Status:        status,
+		Result:        domain.RunResult(b.Result),
+		URL:           b.URL,
+		StartedAt:     time.UnixMilli(b.Timestamp),
+		Duration:      b.Duration,
+		UpstreamJob:   upstreamJob,
+		UpstreamRunID: upstreamRunID,
+		Children:      parseChildrenFromDescription(b.Description),
+	}, true
 }
 
 // GetDownstreamRuns finds builds in downstreamJob that were triggered by
