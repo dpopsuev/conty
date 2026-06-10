@@ -98,11 +98,8 @@ type Adapter struct {
 	token   string
 }
 
-func New(ctx context.Context, name, baseURL, user, token string) (*Adapter, error) {
-	j, err := gojenkins.CreateJenkins(nil, baseURL, user, token).Init(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("jenkins init: %w", err)
-	}
+func New(name, baseURL, user, token string) (*Adapter, error) {
+	j := gojenkins.CreateJenkins(nil, baseURL, user, token)
 	return &Adapter{name: name, jenkins: j, baseURL: baseURL, user: user, token: token}, nil
 }
 
