@@ -1,9 +1,7 @@
 package jenkins
 
 import (
-	"context"
 	"os"
-	"time"
 
 	adapterdriven "github.com/dpopsuev/conty/internal/adapter/driven"
 	"github.com/dpopsuev/conty/internal/config"
@@ -27,8 +25,6 @@ func init() {
 		if url == "" || token == "" || user == "" {
 			return nil, nil
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		return New(ctx, name, url, user, token)
+		return New(name, url, user, token)
 	})
 }

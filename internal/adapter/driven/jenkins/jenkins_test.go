@@ -338,6 +338,21 @@ func TestSearchRuns_DescriptionChildren(t *testing.T) {
 	}
 }
 
+func TestNew_NoNetworkRequired(t *testing.T) {
+	// New must succeed even when the Jenkins host is unreachable.
+	// The old Init probe would fail here; lazy init must not.
+	a, err := New("test", "https://jenkins.example.com", "user", "token")
+	if err != nil {
+		t.Fatalf("New returned error without network: %v", err)
+	}
+	if a == nil {
+		t.Fatal("New returned nil adapter")
+	}
+	if a.Name() != "test" {
+		t.Errorf("Name() = %q, want %q", a.Name(), "test")
+	}
+}
+
 func TestBuildJobPath(t *testing.T) {
 	cases := []struct {
 		input string
