@@ -336,3 +336,7 @@ func (a *Adapter) invalidatePrefix(prefix string) {
 		}
 	}
 }
+
+func (a *Adapter) ListStageNodesWithLogs(ctx context.Context, jobRef, runID string) ([]domain.CIStageNode, error) {
+	return a.ListStageNodes(ctx, jobRef, runID)
+}

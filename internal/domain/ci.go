@@ -78,17 +78,20 @@ type CIStep struct {
 	ID          string    `json:"id"`
 	Name        string    `json:"name"`
 	Status      RunStatus `json:"status"`
-	Duration    int64     `json:"duration,omitempty"`
+	Duration    int64     `json:"duration_ms,omitempty"`
+	DurationStr string    `json:"duration,omitempty"`
 	Description string    `json:"description,omitempty"`
+	FailedLog   string    `json:"failed_log,omitempty"`
 }
 
 // CIStageNode is a pipeline stage with its steps expanded.
 type CIStageNode struct {
-	ID       string    `json:"id"`
-	Name     string    `json:"name"`
-	Status   RunStatus `json:"status"`
-	Duration int64     `json:"duration,omitempty"`
-	Steps    []CIStep  `json:"steps,omitempty"`
+	ID          string    `json:"id"`
+	Name        string    `json:"name"`
+	Status      RunStatus `json:"status"`
+	Duration    int64     `json:"duration_ms,omitempty"`
+	DurationStr string    `json:"duration,omitempty"`
+	Steps       []CIStep  `json:"steps,omitempty"`
 }
 
 // CIArtifactDir is a node in an artifact directory tree.

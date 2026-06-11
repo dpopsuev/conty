@@ -300,6 +300,10 @@ func (s *StubCIMonitorService) CIStageTree(_ context.Context, _, _, _ string) ([
 	return nil, nil
 }
 
+func (s *StubCIMonitorService) CIStageTreeWithLogs(_ context.Context, _, _, _ string) ([]domain.CIStageNode, error) {
+	return nil, nil
+}
+
 func (s *StubCIMonitorService) CIArtifactTree(_ context.Context, _, _, _ string) (*domain.CIArtifactDir, error) {
 	return nil, nil
 }

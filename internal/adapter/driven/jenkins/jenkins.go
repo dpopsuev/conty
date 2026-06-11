@@ -247,16 +247,17 @@ func (a *Adapter) ListStageNodes(ctx context.Context, jobName string, runID stri
 	for i := range raw.Stages {
 		s := &raw.Stages[i]
 		node := domain.CIStageNode{
-			ID:       s.ID,
-			Name:     s.Name,
-			Status:   mapPipelineStatus(s.Status),
-			Duration: int64(s.Duration),
+			ID:          s.ID,
+			Name:        s.Name,
+			Status:      mapPipelineStatus(s.Status),
+			Duration:    int64(s.Duration),
+			DurationStr: domain.FmtDuration(int64(s.Duration)),
 		}
 		// Fetch steps for non-skipped stages via direct HTTP call.
 		// gojenkins GetNode is not used because PipelineNode.ParentNodes is []int64
 		// but Jenkins returns []string, causing JSON unmarshal errors.
 		if s.Status != "NOT_EXECUTED" && s.Status != "SKIPPED" {
-			steps, serr := a.fetchStageSteps(ctx, jobName, runID, s.ID)
+			steps, serr := a.fetchStageSteps(ctx, jobName, runID, s.ID, false)
 			if serr == nil {
 				node.Steps = steps
 			}
@@ -267,6 +268,24 @@ func (a *Adapter) ListStageNodes(ctx context.Context, jobName string, runID stri
 	adapterdriven.LogOpDone(ctx, a.name, "list_stage_nodes",
 		slog.Duration(adapterdriven.LogKeyElapsed, time.Since(start)),
 		slog.Int(adapterdriven.LogKeyCount, len(nodes)))
+	return nodes, nil
+}
+
+func (a *Adapter) ListStageNodesWithLogs(ctx context.Context, jobName string, runID string) ([]domain.CIStageNode, error) {
+	nodes, err := a.ListStageNodes(ctx, jobName, runID)
+	if err != nil {
+		return nil, err
+	}
+	// Re-fetch steps with log enabled for failed stages.
+	for i, node := range nodes {
+		if node.Status != domain.RunStatusFailure {
+			continue
+		}
+		steps, serr := a.fetchStageSteps(ctx, jobName, runID, node.ID, true)
+		if serr == nil {
+			nodes[i].Steps = steps
+		}
+	}
 	return nodes, nil
 }
 
@@ -1045,7 +1064,8 @@ type wfStageNode struct {
 }
 
 // fetchStageSteps retrieves step-level detail for a pipeline stage via wfapi.
-func (a *Adapter) fetchStageSteps(ctx context.Context, jobName, runID, nodeID string) ([]domain.CIStep, error) {
+// When includeFailedLog is true, failed steps have their wfapi/log text attached.
+func (a *Adapter) fetchStageSteps(ctx context.Context, jobName, runID, nodeID string, includeFailedLog bool) ([]domain.CIStep, error) {
 	urlPath := strings.TrimRight(a.baseURL, "/") +
 		"/job/" + strings.Trim(jobName, "/") +
 		"/" + runID +
@@ -1071,19 +1091,55 @@ func (a *Adapter) fetchStageSteps(ctx context.Context, jobName, runID, nodeID st
 
 	steps := make([]domain.CIStep, 0, len(node.StageFlowNodes))
 	for _, st := range node.StageFlowNodes {
-		desc := st.ParamDesc
+		desc := domain.CleanStepDesc(st.ParamDesc)
 		if desc == "" {
 			desc = st.Name
 		}
-		steps = append(steps, domain.CIStep{
+		status := mapPipelineStatus(st.Status)
+		step := domain.CIStep{
 			ID:          st.ID,
 			Name:        st.Name,
-			Status:      mapPipelineStatus(st.Status),
+			Status:      status,
 			Duration:    st.Duration,
+			DurationStr: domain.FmtDuration(st.Duration),
 			Description: desc,
-		})
+		}
+		if includeFailedLog && status == domain.RunStatusFailure {
+			if log, lerr := a.fetchStepLog(ctx, runID, st.ID); lerr == nil && log != "" {
+				step.FailedLog = log
+			}
+		}
+		steps = append(steps, step)
 	}
 	return steps, nil
+}
+
+// fetchStepLog retrieves the console log for a single pipeline step via wfapi/log.
+func (a *Adapter) fetchStepLog(ctx context.Context, runID, nodeID string) (string, error) {
+	urlPath := strings.TrimRight(a.baseURL, "/") +
+		"/job/" + strings.Trim(a.name, "/") +
+		"/" + runID + "/execution/node/" + nodeID + "/wfapi/log"
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, urlPath, nil)
+	if err != nil {
+		return "", err
+	}
+	if a.user != "" && a.token != "" {
+		req.SetBasicAuth(a.user, a.token)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	var result struct {
+		Text string `json:"text"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(result.Text), nil
 }
 
 // wfArtifactRelPath extracts the relative artifact path from gojenkins'

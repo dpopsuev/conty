@@ -34,6 +34,7 @@ type CIMonitorService interface {
 	CIGetRun(ctx context.Context, backend, jobRef, runID string) (*domain.CIRun, error)
 	CIChain(ctx context.Context, backend, jobRef, runID string, depth int, includeArtifacts bool) (*domain.CIRunNode, error)
 	CIStageTree(ctx context.Context, backend, jobRef, runID string) ([]domain.CIStageNode, error)
+	CIStageTreeWithLogs(ctx context.Context, backend, jobRef, runID string) ([]domain.CIStageNode, error)
 	CIArtifactTree(ctx context.Context, backend, jobRef, runID string) (*domain.CIArtifactDir, error)
 	CIDownstream(ctx context.Context, backend, downstreamJob, upstreamJob, upstreamRunID string) ([]domain.CIRun, error)
 	OwnsRun(backend, buildNumber string) bool

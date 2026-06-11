@@ -109,6 +109,9 @@ type CIPipeliner interface {
 	ListStages(ctx context.Context, jobRef, runID string) ([]domain.CIJob, error)
 	// ListStageNodes returns stages with their steps (stageFlowNodes) expanded.
 	ListStageNodes(ctx context.Context, jobRef, runID string) ([]domain.CIStageNode, error)
+	// ListStageNodesWithLogs is like ListStageNodes but also fetches the wfapi log
+	// for each failed step and attaches it to CIStep.FailedLog.
+	ListStageNodesWithLogs(ctx context.Context, jobRef, runID string) ([]domain.CIStageNode, error)
 }
 
 // CIArtifactStore provides artifact listing and download.

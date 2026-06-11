@@ -211,6 +211,15 @@ func (s *StubCIAdapter) ListStageNodes(_ context.Context, _, _ string) ([]domain
 	return s.StageNodes, nil
 }
 
+func (s *StubCIAdapter) ListStageNodesWithLogs(_ context.Context, _, _ string) ([]domain.CIStageNode, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.ListStageNodesErr != nil {
+		return nil, s.ListStageNodesErr
+	}
+	return s.StageNodes, nil
+}
+
 func (s *StubCIAdapter) ListWfArtifacts(_ context.Context, _, _ string) ([]domain.CIArtifact, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

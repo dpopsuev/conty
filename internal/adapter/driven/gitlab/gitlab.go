@@ -547,3 +547,7 @@ func (a *Adapter) ListStageNodes(_ context.Context, _, _ string) ([]domain.CISta
 func (a *Adapter) ListWfArtifacts(ctx context.Context, jobRef, runID string) ([]domain.CIArtifact, error) {
 	return a.ListArtifacts(ctx, jobRef, runID)
 }
+
+func (a *Adapter) ListStageNodesWithLogs(ctx context.Context, jobRef, runID string) ([]domain.CIStageNode, error) {
+	return a.ListStageNodes(ctx, jobRef, runID)
+}

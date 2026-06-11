@@ -74,11 +74,105 @@ var serveCmd = &cobra.Command{
 	},
 }
 
+var stagesCmd = &cobra.Command{
+	Use:   "stages [job-ref] [run-id]",
+	Short: "List pipeline stages with optional step detail",
+	Args:  cobra.RangeArgs(1, 2),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		backend, _ := cmd.Flags().GetString("backend")
+		steps, _ := cmd.Flags().GetBool("steps")
+		includeLogs, _ := cmd.Flags().GetBool("include-failed-log")
+		runID := ""
+		if len(args) > 1 {
+			runID = args[1]
+		}
+		svc, err := newService()
+		if err != nil {
+			return err
+		}
+		if !steps {
+			nodes, err := svc.CIStageTree(cmd.Context(), backend, args[0], runID)
+			if err != nil {
+				return err
+			}
+			return printJSON(nodes)
+		}
+		if includeLogs {
+			nodes, err := svc.CIStageTreeWithLogs(cmd.Context(), backend, args[0], runID)
+			if err != nil {
+				return err
+			}
+			return printJSON(nodes)
+		}
+		nodes, err := svc.CIStageTree(cmd.Context(), backend, args[0], runID)
+		if err != nil {
+			return err
+		}
+		return printJSON(nodes)
+	},
+}
+
+var chainCmd = &cobra.Command{
+	Use:   "chain [job-ref] [run-id]",
+	Short: "Fetch full build tree (parent + child jobs)",
+	Args:  cobra.RangeArgs(1, 2),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		backend, _ := cmd.Flags().GetString("backend")
+		depth, _ := cmd.Flags().GetInt("depth")
+		artifacts, _ := cmd.Flags().GetBool("artifacts")
+		runID := ""
+		if len(args) > 1 {
+			runID = args[1]
+		}
+		if depth == 0 {
+			depth = 3
+		}
+		svc, err := newService()
+		if err != nil {
+			return err
+		}
+		node, err := svc.CIChain(cmd.Context(), backend, args[0], runID, depth, artifacts)
+		if err != nil {
+			return err
+		}
+		return printJSON(node)
+	},
+}
+
+var artifactTreeCmd = &cobra.Command{
+	Use:   "artifact-tree [job-ref] [run-id]",
+	Short: "List artifacts grouped into a directory tree",
+	Args:  cobra.RangeArgs(1, 2),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		backend, _ := cmd.Flags().GetString("backend")
+		runID := ""
+		if len(args) > 1 {
+			runID = args[1]
+		}
+		svc, err := newService()
+		if err != nil {
+			return err
+		}
+		tree, err := svc.CIArtifactTree(cmd.Context(), backend, args[0], runID)
+		if err != nil {
+			return err
+		}
+		return printJSON(tree)
+	},
+}
+
 func init() {
 	rootCmd.PersistentFlags().StringVarP(&flagConfig, "config", "c", "", "config file path")
 	checkCmd.Flags().StringP("backend", "b", "", "backend name")
 	serveCmd.Flags().String("addr", "", "HTTP listen address (e.g. :8082). Omit for stdio")
-	rootCmd.AddCommand(deployCmd, checkCmd, serveCmd)
+	stagesCmd.Flags().StringP("backend", "b", "", "backend name")
+	stagesCmd.Flags().Bool("steps", false, "expand stages to include step-level detail")
+	stagesCmd.Flags().Bool("include-failed-log", false, "attach wfapi log of failed steps (requires --steps)")
+	chainCmd.Flags().StringP("backend", "b", "", "backend name")
+	chainCmd.Flags().Int("depth", 3, "max recursion depth (-1 = unlimited)")
+	chainCmd.Flags().Bool("artifacts", false, "attach artifact list to each node")
+	artifactTreeCmd.Flags().StringP("backend", "b", "", "backend name")
+	rootCmd.AddCommand(deployCmd, checkCmd, serveCmd, stagesCmd, chainCmd, artifactTreeCmd)
 }
 
 func Execute() error {

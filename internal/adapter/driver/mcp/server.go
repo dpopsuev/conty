@@ -30,7 +30,10 @@ const serverInstructions = "CI/CD operations. Call ci(action=help) first — lis
 	"Combine with result=SUCCESS|FAILURE and since=<RFC3339> for precise filtering. " +
 	"Never write a bash loop over Jenkins API when search(params=) covers the use case. " +
 	"CHAIN for hierarchy — use chain(backend, job_ref, run_id) to get the full nested build tree in one call " +
-	"instead of repeated downstream lookups. Returns CIRunNode with recursive children."
+	"instead of repeated downstream lookups. Returns CIRunNode with recursive children. " +
+	"DIAGNOSE failures with stages(steps=true, include_failed_log=true) — returns stage→steps tree with " +
+	"failed step logs attached. Use this BEFORE reading console log. " +
+	"WAIT is now blocking — wait(backend, job_ref, run_id) polls until terminal state and returns final status."
 
 var contySchema = json.RawMessage(`{
 	"type": "object",
@@ -55,7 +58,9 @@ var contySchema = json.RawMessage(`{
 		"include":        {"type": "string", "description": "Comma-separated extras for status: 'params' to include build parameters."},
 		"downstream_job": {"type": "string", "description": "Downstream job name for the downstream action. Required — Jenkins has no native reverse index."},
 		"depth":     {"type": "integer", "description": "Max recursion depth for chain (default 3, -1 = unlimited)."},
-		"steps":     {"type": "boolean", "description": "Expand stages to include step-level detail (stages action)."},
+		"steps":              {"type": "boolean", "description": "Expand stages to include step-level detail (stages action)."},
+		"include_failed_log": {"type": "boolean", "description": "Attach wfapi log of each failed step (stages action, requires steps=true)."},
+		"timeout_s":          {"type": "integer", "description": "Blocking timeout in seconds for wait action (default 3600)."},
 		"tree":      {"type": "boolean", "description": "Return artifacts grouped as a directory tree (artifact action)."},
 		"artifacts": {"type": "boolean", "description": "Attach artifact list to each node in the chain tree."}
 	},
@@ -89,7 +94,9 @@ type ciArgs struct {
 	Include       string            `json:"include"`
 	DownstreamJob string            `json:"downstream_job"`
 	Depth         int               `json:"depth"`
-	Steps         bool              `json:"steps"`
+	Steps            bool `json:"steps"`
+	IncludeFailedLog bool `json:"include_failed_log"`
+	TimeoutS         int  `json:"timeout_s"`
 	Tree          bool              `json:"tree"`
 	Artifacts     bool              `json:"artifacts"`
 }
@@ -278,11 +285,29 @@ func buildServer(svc ContyService) *mcpserver.Server {
 					if args.JobRef == "" {
 						return tool.Result{}, errJobRefRequired
 					}
-					status, err := svc.CIWatch(ctx, args.Backend, args.JobRef, args.RunID)
-					if err != nil {
-						return tool.Result{}, err
+					// Blocking wait: poll until terminal state or timeout.
+					timeoutSec := args.TimeoutS
+					if timeoutSec <= 0 {
+						timeoutSec = 3600
 					}
-					return battserver.JSONResult(status)
+					wCtx, cancel := context.WithTimeout(ctx, time.Duration(timeoutSec)*time.Second)
+					defer cancel()
+					ticker := time.NewTicker(15 * time.Second)
+					defer ticker.Stop()
+					for {
+						status, err := svc.CIWatch(wCtx, args.Backend, args.JobRef, args.RunID)
+						if err != nil {
+							return tool.Result{}, err
+						}
+						if status.Status != "running" && status.Status != "pending" {
+							return battserver.JSONResult(status)
+						}
+						select {
+						case <-wCtx.Done():
+							return battserver.JSONResult(status)
+						case <-ticker.C:
+						}
+					}
 				}
 				return tool.Result{}, fmt.Errorf("wait requires queue_id (resolve) or run_id (watch)")
 
@@ -366,7 +391,13 @@ func buildServer(svc ContyService) *mcpserver.Server {
 					return tool.Result{}, errJobRefRequired
 				}
 				if args.Steps {
-					nodes, err := svc.CIStageTree(ctx, args.Backend, args.JobRef, args.RunID)
+					var nodes []domain.CIStageNode
+					var err error
+					if args.IncludeFailedLog {
+						nodes, err = svc.CIStageTreeWithLogs(ctx, args.Backend, args.JobRef, args.RunID)
+					} else {
+						nodes, err = svc.CIStageTree(ctx, args.Backend, args.JobRef, args.RunID)
+					}
 					if err != nil {
 						return tool.Result{}, err
 					}
@@ -477,8 +508,9 @@ func handleHelp(svc ContyService) (tool.Result, error) {
 	fmt.Fprintln(&b, "           OR       pipeline")
 	fmt.Fprintln(&b, "           Start a build or pipeline. Returns run_id and queue_id.")
 	fmt.Fprintln(&b)
-	fmt.Fprintln(&b, "  wait     backend queue_id          — resolve queue to build_number")
-	fmt.Fprintln(&b, "           backend job_ref run_id   — watch until terminal, returns status+progress")
+	fmt.Fprintln(&b, "  wait     backend queue_id                   — resolve queue to build_number")
+	fmt.Fprintln(&b, "           backend job_ref run_id [timeout_s] — BLOCKING poll until terminal (default 3600s).")
+	fmt.Fprintln(&b, "           Returns final status. Use after trigger for automated deploy-and-diagnose.")
 	fmt.Fprintln(&b)
 	fmt.Fprintln(&b, "  artifact backend job_ref run_id [path] [grep] [tail]")
 	fmt.Fprintln(&b, "           Omit path to list artifacts. Provide path to read a text artifact.")
@@ -493,9 +525,10 @@ func handleHelp(svc ContyService) (tool.Result, error) {
 	fmt.Fprintln(&b, "           Find builds in downstream_job triggered by job_ref#run_id.")
 	fmt.Fprintln(&b, "           downstream_job required — Jenkins has no native reverse index.")
 	fmt.Fprintln(&b)
-	fmt.Fprintln(&b, "  stages   backend job_ref [run_id] [steps]")
+	fmt.Fprintln(&b, "  stages   backend job_ref [run_id] [steps] [include_failed_log]")
 	fmt.Fprintln(&b, "           List pipeline stages. steps=true expands each stage to include step-level detail.")
-	fmt.Fprintln(&b, "           Without steps: flat list. With steps: stage→steps tree in one call.")
+	fmt.Fprintln(&b, "           include_failed_log=true also attaches the wfapi log of each failed step.")
+	fmt.Fprintln(&b, "           Use stages(steps=true, include_failed_log=true) as the FIRST diagnostic call for failures.")
 	fmt.Fprintln(&b)
 	fmt.Fprintln(&b, "  chain    backend job_ref run_id [depth] [artifacts]")
 	fmt.Fprintln(&b, "           Fetch a build and recursively expand its child jobs into a tree.")

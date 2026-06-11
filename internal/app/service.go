@@ -260,6 +260,19 @@ func (s *Service) CIStageTree(ctx context.Context, backend, jobRef, runID string
 	return p.ListStageNodes(ctx, jobRef, runID)
 }
 
+// CIStageTreeWithLogs is like CIStageTree but attaches failed step logs.
+func (s *Service) CIStageTreeWithLogs(ctx context.Context, backend, jobRef, runID string) ([]domain.CIStageNode, error) {
+	a, err := s.adapter(backend)
+	if err != nil {
+		return nil, err
+	}
+	p, ok := a.(driven.CIPipeliner)
+	if !ok {
+		return nil, fmt.Errorf("backend %q does not support pipeline stages", backend)
+	}
+	return p.ListStageNodesWithLogs(ctx, jobRef, runID)
+}
+
 // CIArtifactTree returns artifacts grouped into a directory tree.
 func (s *Service) CIArtifactTree(ctx context.Context, backend, jobRef, runID string) (*domain.CIArtifactDir, error) {
 	a, err := s.adapter(backend)
