@@ -24,7 +24,11 @@ var Version = "dev"
 
 const serverInstructions = "CI/CD operations. Call ci(action=help) first — lists backends, pipelines, and all actions with params. " +
 	"Typical flow: trigger → wait → status. For failures: status(grep=error) gives verdict + filtered log in one call. " +
-	"run_id is optional for status/log — omit to use the latest build."
+	"run_id is optional for status/log — omit to use the latest build. " +
+	"SEARCH FIRST — before reaching for curl or bash API loops, use search(params={key:value}) to find builds by " +
+	"parameter value: search(backend=X, job_ref=Y, params={\"VERSION\":\"5.0\"}) returns all matching builds. " +
+	"Combine with result=SUCCESS|FAILURE and since=<RFC3339> for precise filtering. " +
+	"Never write a bash loop over Jenkins API when search(params=) covers the use case."
 
 var contySchema = json.RawMessage(`{
 	"type": "object",
@@ -122,7 +126,9 @@ func NewHTTPHandler(svc ContyService) http.Handler {
 func buildServer(svc ContyService) *mcpserver.Server {
 	meta := battserver.ToolMeta{
 		Name:        serverName,
-		Description: "CI/CD operations — help | status | log | search | trigger | wait | artifact | cancel | upstream | downstream",
+		Description: "CI/CD operations — help | status | log | search | trigger | wait | artifact | cancel | upstream | downstream. " +
+		"search supports params={key:value} filtering to find builds by parameter value (e.g. VERSION, HOST). " +
+		"Use search before curl.",
 		Keywords:    []string{"ci", "build", "deploy", "jenkins", "pipeline", "log", "trigger", "status"},
 		Categories:  []string{"ci", "deployment"},
 	}
