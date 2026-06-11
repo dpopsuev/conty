@@ -373,9 +373,11 @@ func (a *Adapter) ListArtifacts(ctx context.Context, jobName string, runID strin
 	raw := b.GetArtifacts()
 	artifacts := make([]domain.CIArtifact, 0, len(raw))
 	for i := range raw {
+		// gojenkins sets Path = base + "/artifact/" + relativePath (full URL).
+		// Strip to get the relative path for tree building.
 		artifacts = append(artifacts, domain.CIArtifact{
 			Name: raw[i].FileName,
-			Path: raw[i].Path,
+			Path: wfArtifactRelPath(raw[i].Path, raw[i].FileName),
 		})
 	}
 
