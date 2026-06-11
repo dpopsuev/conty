@@ -547,3 +547,11 @@ func mapResultToGHStatus(result string) string {
 		return ""
 	}
 }
+
+func (a *Adapter) ListStageNodes(_ context.Context, _, _ string) ([]domain.CIStageNode, error) {
+	return nil, fmt.Errorf("stage step expansion not supported by %s backend", a.Name())
+}
+
+func (a *Adapter) ListWfArtifacts(ctx context.Context, jobRef, runID string) ([]domain.CIArtifact, error) {
+	return a.ListArtifacts(ctx, jobRef, runID)
+}

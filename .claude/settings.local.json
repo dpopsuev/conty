@@ -1,0 +1,29 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python3 -c ' *)",
+      "Read(//home/dpopsuev/go/pkg/mod/github.com/dpopsuev/battery@v0.10.2/server/**)",
+      "Read(//home/dpopsuev/go/pkg/mod/github.com/dpopsuev/battery@v0.10.2/**)",
+      "Read(//home/dpopsuev/go/pkg/mod/github.com/bndr/gojenkins@v1.2.0/**)",
+      "Bash(make install *)",
+      "Bash(conty --help)",
+      "Bash(conty deploy *)",
+      "Bash(conty check *)",
+      "Bash(env)",
+      "Bash(JENKINS_URL=https://jenkins-csb-kniqe-auto.dno.corp.redhat.com JENKINS_USER=dpopsuev go test *)",
+      "Bash(gh repo *)",
+      "Bash(python3 -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\(json.dumps\\(d.get\\('mcpServers',{}\\), indent=2\\)\\)\")",
+      "Read(//home/dpopsuev/**)",
+      "Bash(python3 *)",
+      "Bash(bin/conty serve *)",
+      "Bash(kill %1)",
+      "Read(//tmp/**)",
+      "Bash(pkill -f \"conty serve\")",
+      "Bash(conty serve *)",
+      "Bash(fuser *)",
+      "Bash(grep -E \"--- PASS|--- FAIL|^ok|FAIL$\")",
+      "Bash(pkill -9 -f \"conty serve\")",
+      "Bash(xargs kill *)"
+    ]
+  }
+}

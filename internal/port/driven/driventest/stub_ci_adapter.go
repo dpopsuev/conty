@@ -65,11 +65,15 @@ type StubCIAdapter struct {
 	TriggerRunErr        error
 	GetRunErr            error
 	ListStagesErr        error
+	StageNodes           []domain.CIStageNode
+	ListStageNodesErr    error
 	GetLogErr            error
 	GetBuildParamsErr    error
 	ListBuildsErr        error
 	ListArtifactsErr     error
 	GetArtifactErr       error
+	WfArtifacts          []domain.CIArtifact
+	ListWfArtifactsErr   error
 	GetDownstreamRunsErr error
 
 	mu                 sync.Mutex
@@ -197,6 +201,24 @@ func (s *StubCIAdapter) GetRunParams(_ context.Context, _, _ string) (map[string
 }
 
 // ── CIPipeliner ──────────────────────────────────────────────────────────────
+
+func (s *StubCIAdapter) ListStageNodes(_ context.Context, _, _ string) ([]domain.CIStageNode, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.ListStageNodesErr != nil {
+		return nil, s.ListStageNodesErr
+	}
+	return s.StageNodes, nil
+}
+
+func (s *StubCIAdapter) ListWfArtifacts(_ context.Context, _, _ string) ([]domain.CIArtifact, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.ListWfArtifactsErr != nil {
+		return nil, s.ListWfArtifactsErr
+	}
+	return s.WfArtifacts, nil
+}
 
 func (s *StubCIAdapter) ListStages(_ context.Context, jobName, runID string) ([]domain.CIJob, error) {
 	s.mu.Lock()

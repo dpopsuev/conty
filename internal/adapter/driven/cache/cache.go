@@ -219,6 +219,30 @@ func (a *Adapter) ListStages(ctx context.Context, jobRef, runID string) ([]domai
 
 // ── CIArtifactStore ──────────────────────────────────────────────────────────
 
+func (a *Adapter) ListStageNodes(ctx context.Context, jobRef, runID string) ([]domain.CIStageNode, error) {
+	// Not cached — steps expand per-stage via extra HTTP calls; caching would need per-stage keys.
+	if p, ok := a.inner.(driven.CIPipeliner); ok {
+		return p.ListStageNodes(ctx, jobRef, runID)
+	}
+	return nil, fmt.Errorf("backend %q does not support stage nodes", a.inner.Name())
+}
+
+func (a *Adapter) ListWfArtifacts(ctx context.Context, jobRef, runID string) ([]domain.CIArtifact, error) {
+	key := fmt.Sprintf("wf_artifacts:%s:%s", jobRef, runID)
+	if v, ok := a.get(key); ok {
+		return v.([]domain.CIArtifact), nil
+	}
+	if s, ok := a.inner.(driven.CIArtifactStore); ok {
+		artifacts, err := s.ListWfArtifacts(ctx, jobRef, runID)
+		if err != nil {
+			return nil, err
+		}
+		a.put(key, artifacts, a.artifactTTL)
+		return artifacts, nil
+	}
+	return nil, fmt.Errorf("backend %q does not support wf artifacts", a.inner.Name())
+}
+
 func (a *Adapter) ListArtifacts(ctx context.Context, jobRef, runID string) ([]domain.CIArtifact, error) {
 	key := fmt.Sprintf("artifacts:%s:%s", jobRef, runID)
 	if v, ok := a.get(key); ok {

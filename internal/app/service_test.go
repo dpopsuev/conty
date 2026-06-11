@@ -664,3 +664,152 @@ func TestCILog_GrepFilter(t *testing.T) {
 		t.Error("expected Filtered=true")
 	}
 }
+
+// ── CIStageTree ──────────────────────────────────────────────────────────────
+
+func TestCIStageTree_ReturnsStagedWithSteps(t *testing.T) {
+	stub := stubAdapter()
+	stub.StageNodes = []domain.CIStageNode{
+		{
+			ID: "1", Name: "Mirror", Status: domain.RunStatusSuccess,
+			Steps: []domain.CIStep{
+				{ID: "2", Name: "Mirror images", Status: domain.RunStatusSuccess},
+			},
+		},
+		{
+			ID: "3", Name: "Deploy", Status: domain.RunStatusFailure,
+			Steps: []domain.CIStep{
+				{ID: "4", Name: "Wait for MCP", Status: domain.RunStatusFailure},
+			},
+		},
+	}
+	svc := app.NewService(stub)
+
+	nodes, err := svc.CIStageTree(context.Background(), "test", "my-job", "42")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(nodes) != 2 {
+		t.Fatalf("want 2 stages, got %d", len(nodes))
+	}
+	if nodes[1].Status != domain.RunStatusFailure {
+		t.Errorf("want Deploy FAILED, got %s", nodes[1].Status)
+	}
+	if len(nodes[1].Steps) != 1 || nodes[1].Steps[0].Name != "Wait for MCP" {
+		t.Errorf("expected step 'Wait for MCP', got %+v", nodes[1].Steps)
+	}
+}
+
+func TestCIStageTree_BackendError(t *testing.T) {
+	stub := stubAdapter()
+	stub.ListStageNodesErr = errors.New("wfapi unavailable")
+	svc := app.NewService(stub)
+
+	_, err := svc.CIStageTree(context.Background(), "test", "my-job", "42")
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+}
+
+// ── CIArtifactTree ────────────────────────────────────────────────────────────
+
+func TestCIArtifactTree_FlatArtifacts(t *testing.T) {
+	stub := stubAdapter()
+	stub.WfArtifacts = []domain.CIArtifact{
+		{Name: "build.url", Path: "build.url", Size: 90},
+		{Name: "lockdown.json", Path: "lockdown.json", Size: 2972},
+	}
+	svc := app.NewService(stub)
+
+	tree, err := svc.CIArtifactTree(context.Background(), "test", "my-job", "42")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(tree.Files) != 2 {
+		t.Errorf("want 2 root files, got %d", len(tree.Files))
+	}
+	if len(tree.Children) != 0 {
+		t.Errorf("want 0 subdirs, got %d", len(tree.Children))
+	}
+}
+
+func TestCIArtifactTree_NestedArtifacts(t *testing.T) {
+	stub := stubAdapter()
+	stub.WfArtifacts = []domain.CIArtifact{
+		{Name: "build.url", Path: "build.url", Size: 10},
+		{Name: "ptp_suite_test.xml", Path: "cnf-gotests/reports/ptp_suite_test.xml", Size: 500},
+		{Name: "failed_ptp_suite_test.zip", Path: "cnf-gotests/reports/failed_ptp_suite_test.zip", Size: 8000},
+		{Name: "lockdown.json", Path: "artifacts/lockdown.json", Size: 100},
+	}
+	svc := app.NewService(stub)
+
+	tree, err := svc.CIArtifactTree(context.Background(), "test", "my-job", "42")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(tree.Files) != 1 || tree.Files[0].Name != "build.url" {
+		t.Errorf("want 1 root file (build.url), got %+v", tree.Files)
+	}
+	if len(tree.Children) != 2 {
+		t.Errorf("want 2 subdirs (cnf-gotests, artifacts), got %d", len(tree.Children))
+	}
+	var reports *domain.CIArtifactDir
+	for i := range tree.Children {
+		if tree.Children[i].Path == "cnf-gotests" {
+			for j := range tree.Children[i].Children {
+				if tree.Children[i].Children[j].Path == "reports" {
+					reports = &tree.Children[i].Children[j]
+				}
+			}
+		}
+	}
+	if reports == nil {
+		t.Fatal("cnf-gotests/reports subdir not found")
+	}
+	if len(reports.Files) != 2 {
+		t.Errorf("want 2 files in reports/, got %d", len(reports.Files))
+	}
+}
+
+func TestCIArtifactTree_FallsBackToStandardArtifacts(t *testing.T) {
+	stub := stubAdapter()
+	stub.ListWfArtifactsErr = errors.New("wfapi not available")
+	stub.Artifacts = []domain.CIArtifact{
+		{Name: "build.url", Path: "build.url"},
+	}
+	svc := app.NewService(stub)
+
+	tree, err := svc.CIArtifactTree(context.Background(), "test", "my-job", "42")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(tree.Files) != 1 {
+		t.Errorf("want 1 file from fallback, got %d", len(tree.Files))
+	}
+}
+
+// ── CIChain with artifacts ────────────────────────────────────────────────────
+
+func TestCIChain_IncludesArtifacts(t *testing.T) {
+	stub := stubAdapter()
+	stub.Run = &domain.CIRun{
+		ID: "42", Name: "deploy #42",
+		Status: domain.RunStatusSuccess,
+		Result: domain.RunResultSuccess,
+	}
+	stub.WfArtifacts = []domain.CIArtifact{
+		{Name: "build.url", Path: "build.url", Size: 90},
+	}
+	svc := app.NewService(stub)
+
+	node, err := svc.CIChain(context.Background(), "test", "my-job", "42", 0, true)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(node.Artifacts) != 1 {
+		t.Errorf("want 1 artifact, got %d", len(node.Artifacts))
+	}
+	if node.Artifacts[0].Name != "build.url" {
+		t.Errorf("unexpected artifact: %s", node.Artifacts[0].Name)
+	}
+}

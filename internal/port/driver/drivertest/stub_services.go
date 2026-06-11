@@ -292,6 +292,18 @@ func (s *StubCIMonitorService) CIGetRun(_ context.Context, _, _, _ string) (*dom
 	return nil, s.Err
 }
 
+func (s *StubCIMonitorService) CIChain(_ context.Context, _, _, _ string, _ int, _ bool) (*domain.CIRunNode, error) {
+	return nil, nil
+}
+
+func (s *StubCIMonitorService) CIStageTree(_ context.Context, _, _, _ string) ([]domain.CIStageNode, error) {
+	return nil, nil
+}
+
+func (s *StubCIMonitorService) CIArtifactTree(_ context.Context, _, _, _ string) (*domain.CIArtifactDir, error) {
+	return nil, nil
+}
+
 func (s *StubCIMonitorService) CIDownstream(_ context.Context, _, _, _, _ string) ([]domain.CIRun, error) {
 	return s.Builds, s.Err
 }

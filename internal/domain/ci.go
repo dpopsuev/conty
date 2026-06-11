@@ -59,6 +59,46 @@ type CIRun struct {
 	Children      []CIRunRef `json:"children,omitempty"`
 }
 
+// CIRunNode is a fully-expanded build with its children recursively resolved.
+// Returned by the chain action in place of the lightweight CIRunRef slice.
+type CIRunNode struct {
+	JobRef    string        `json:"job_ref"`
+	RunID     string        `json:"run_id"`
+	Name      string        `json:"name"`
+	Status    RunStatus     `json:"status"`
+	Result    RunResult     `json:"result,omitempty"`
+	URL       string        `json:"url,omitempty"`
+	Duration  int64         `json:"duration,omitempty"`
+	Artifacts []CIArtifact  `json:"artifacts,omitempty"`
+	Children  []CIRunNode   `json:"children,omitempty"`
+}
+
+// CIStep is a single step within a pipeline stage.
+type CIStep struct {
+	ID          string    `json:"id"`
+	Name        string    `json:"name"`
+	Status      RunStatus `json:"status"`
+	Duration    int64     `json:"duration,omitempty"`
+	Description string    `json:"description,omitempty"`
+}
+
+// CIStageNode is a pipeline stage with its steps expanded.
+type CIStageNode struct {
+	ID       string    `json:"id"`
+	Name     string    `json:"name"`
+	Status   RunStatus `json:"status"`
+	Duration int64     `json:"duration,omitempty"`
+	Steps    []CIStep  `json:"steps,omitempty"`
+}
+
+// CIArtifactDir is a node in an artifact directory tree.
+// Files are artifacts directly in this directory; Children are subdirs.
+type CIArtifactDir struct {
+	Path     string          `json:"path"`
+	Files    []CIArtifact    `json:"files,omitempty"`
+	Children []CIArtifactDir `json:"children,omitempty"`
+}
+
 type CIJob struct {
 	ID        string    `json:"id"`
 	Name      string    `json:"name"`

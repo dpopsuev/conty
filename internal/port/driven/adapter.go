@@ -107,12 +107,16 @@ type CIHistorical interface {
 // Replaces ListJobs.
 type CIPipeliner interface {
 	ListStages(ctx context.Context, jobRef, runID string) ([]domain.CIJob, error)
+	// ListStageNodes returns stages with their steps (stageFlowNodes) expanded.
+	ListStageNodes(ctx context.Context, jobRef, runID string) ([]domain.CIStageNode, error)
 }
 
 // CIArtifactStore provides artifact listing and download.
 type CIArtifactStore interface {
 	ListArtifacts(ctx context.Context, jobRef, runID string) ([]domain.CIArtifact, error)
 	GetArtifact(ctx context.Context, jobRef, runID, path string) ([]byte, error)
+	// ListWfArtifacts returns artifacts via the wfapi endpoint, which includes file sizes.
+	ListWfArtifacts(ctx context.Context, jobRef, runID string) ([]domain.CIArtifact, error)
 }
 
 // CIChainable provides upstream/downstream build chain traversal.

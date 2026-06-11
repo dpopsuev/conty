@@ -247,6 +247,125 @@ func (s *Service) CIGetRun(ctx context.Context, backend, jobRef, runID string) (
 	return a.GetRun(ctx, jobRef, runID)
 }
 
+// CIStageTree returns stages with steps expanded for a single build.
+func (s *Service) CIStageTree(ctx context.Context, backend, jobRef, runID string) ([]domain.CIStageNode, error) {
+	a, err := s.adapter(backend)
+	if err != nil {
+		return nil, err
+	}
+	p, ok := a.(driven.CIPipeliner)
+	if !ok {
+		return nil, fmt.Errorf("backend %q does not support pipeline stages", backend)
+	}
+	return p.ListStageNodes(ctx, jobRef, runID)
+}
+
+// CIArtifactTree returns artifacts grouped into a directory tree.
+func (s *Service) CIArtifactTree(ctx context.Context, backend, jobRef, runID string) (*domain.CIArtifactDir, error) {
+	a, err := s.adapter(backend)
+	if err != nil {
+		return nil, err
+	}
+	store, ok := a.(driven.CIArtifactStore)
+	if !ok {
+		return nil, fmt.Errorf("backend %q does not support artifacts", backend)
+	}
+	// Prefer wfapi artifacts (have sizes); fall back to standard listing.
+	artifacts, err := store.ListWfArtifacts(ctx, jobRef, runID)
+	if err != nil || len(artifacts) == 0 {
+		artifacts, err = store.ListArtifacts(ctx, jobRef, runID)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return buildArtifactTree(artifacts), nil
+}
+
+// buildArtifactTree groups a flat artifact list into a directory tree
+// using the Path field (which contains directory separators).
+func buildArtifactTree(artifacts []domain.CIArtifact) *domain.CIArtifactDir {
+	root := &domain.CIArtifactDir{Path: ""}
+	for _, a := range artifacts {
+		insertArtifact(root, a)
+	}
+	return root
+}
+
+func insertArtifact(dir *domain.CIArtifactDir, a domain.CIArtifact) {
+	slash := strings.Index(a.Path, "/")
+	if slash < 0 {
+		// Leaf — file directly in this directory.
+		dir.Files = append(dir.Files, a)
+		return
+	}
+	segment := a.Path[:slash]
+	child := a
+	child.Path = a.Path[slash+1:]
+	for i := range dir.Children {
+		if dir.Children[i].Path == segment {
+			insertArtifact(&dir.Children[i], child)
+			return
+		}
+	}
+	dir.Children = append(dir.Children, domain.CIArtifactDir{Path: segment})
+	insertArtifact(&dir.Children[len(dir.Children)-1], child)
+}
+
+// CIChain fetches a build and recursively expands its children up to depth levels.
+// depth 0 means root only; depth -1 means unlimited.
+// When includeArtifacts is true, each node's artifacts are fetched and attached.
+func (s *Service) CIChain(ctx context.Context, backend, jobRef, runID string, depth int, includeArtifacts bool) (*domain.CIRunNode, error) {
+	a, err := s.adapter(backend)
+	if err != nil {
+		return nil, err
+	}
+	return ciChainExpand(ctx, a, jobRef, runID, depth, includeArtifacts)
+}
+
+func ciChainExpand(ctx context.Context, a driven.CICore, jobRef, runID string, depth int, includeArtifacts bool) (*domain.CIRunNode, error) {
+	run, err := a.GetRun(ctx, jobRef, runID)
+	if err != nil {
+		return nil, err
+	}
+	node := &domain.CIRunNode{
+		JobRef:   jobRef,
+		RunID:    run.ID,
+		Name:     run.Name,
+		Status:   run.Status,
+		Result:   run.Result,
+		URL:      run.URL,
+		Duration: run.Duration,
+	}
+	if includeArtifacts {
+		if store, ok := a.(driven.CIArtifactStore); ok {
+			artifacts, aerr := store.ListWfArtifacts(ctx, jobRef, runID)
+			if aerr != nil || len(artifacts) == 0 {
+				artifacts, _ = store.ListArtifacts(ctx, jobRef, runID)
+			}
+			node.Artifacts = artifacts
+		}
+	}
+	if depth == 0 || len(run.Children) == 0 {
+		return node, nil
+	}
+	nextDepth := depth - 1
+	if depth < 0 {
+		nextDepth = -1
+	}
+	for _, ref := range run.Children {
+		child, err := ciChainExpand(ctx, a, ref.JobRef, ref.RunID, nextDepth, includeArtifacts)
+		if err != nil {
+			child = &domain.CIRunNode{
+				JobRef: ref.JobRef,
+				RunID:  ref.RunID,
+				Status: domain.RunStatus("unknown"),
+			}
+		}
+		node.Children = append(node.Children, *child)
+	}
+	return node, nil
+}
+
 func (s *Service) CIDownstream(ctx context.Context, backend, downstreamJob, upstreamJob, upstreamRunID string) ([]domain.CIRun, error) {
 	a, err := s.adapter(backend)
 	if err != nil {

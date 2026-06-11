@@ -225,6 +225,99 @@ func (a *Adapter) ListStages(ctx context.Context, jobName string, runID string) 
 	return jobs, nil
 }
 
+func (a *Adapter) ListStageNodes(ctx context.Context, jobName string, runID string) ([]domain.CIStageNode, error) {
+	start := time.Now()
+	adapterdriven.LogOp(ctx, a.name, "list_stage_nodes",
+		slog.String(adapterdriven.LogKeyID, jobName),
+		slog.String("run_id", runID))
+
+	j, err := a.getJob(ctx, jobName)
+	if err != nil {
+		adapterdriven.LogError(ctx, a.name, "list_stage_nodes", err)
+		return nil, err
+	}
+
+	raw, err := j.GetPipelineRun(ctx, runID)
+	if err != nil {
+		adapterdriven.LogError(ctx, a.name, "list_stage_nodes", err)
+		return nil, err
+	}
+
+	nodes := make([]domain.CIStageNode, 0, len(raw.Stages))
+	for i := range raw.Stages {
+		s := &raw.Stages[i]
+		node := domain.CIStageNode{
+			ID:       s.ID,
+			Name:     s.Name,
+			Status:   mapPipelineStatus(s.Status),
+			Duration: int64(s.Duration),
+		}
+		// Fetch steps for non-skipped stages.
+		if s.Status != "NOT_EXECUTED" && s.Status != "SKIPPED" {
+			detail, nerr := raw.GetNode(ctx, s.ID)
+			if nerr == nil {
+				node.Steps = make([]domain.CIStep, 0, len(detail.StageFlowNodes))
+				for j := range detail.StageFlowNodes {
+					st := &detail.StageFlowNodes[j]
+					node.Steps = append(node.Steps, domain.CIStep{
+						ID:          st.ID,
+						Name:        st.Name,
+						Status:      mapPipelineStatus(st.Status),
+						Duration:    int64(st.Duration),
+						Description: st.Name,
+					})
+				}
+			}
+		}
+		nodes = append(nodes, node)
+	}
+
+	adapterdriven.LogOpDone(ctx, a.name, "list_stage_nodes",
+		slog.Duration(adapterdriven.LogKeyElapsed, time.Since(start)),
+		slog.Int(adapterdriven.LogKeyCount, len(nodes)))
+	return nodes, nil
+}
+
+func (a *Adapter) ListWfArtifacts(ctx context.Context, jobName string, runID string) ([]domain.CIArtifact, error) {
+	start := time.Now()
+	adapterdriven.LogOp(ctx, a.name, "list_wf_artifacts",
+		slog.String(adapterdriven.LogKeyID, jobName),
+		slog.String("run_id", runID))
+
+	j, err := a.getJob(ctx, jobName)
+	if err != nil {
+		adapterdriven.LogError(ctx, a.name, "list_wf_artifacts", err)
+		return nil, err
+	}
+
+	run, err := j.GetPipelineRun(ctx, runID)
+	if err != nil {
+		adapterdriven.LogError(ctx, a.name, "list_wf_artifacts", err)
+		return nil, err
+	}
+
+	raw, err := run.GetArtifacts(ctx)
+	if err != nil {
+		// wfapi artifacts endpoint may not always be present; fall through to empty.
+		adapterdriven.LogError(ctx, a.name, "list_wf_artifacts", err)
+		return nil, err
+	}
+
+	artifacts := make([]domain.CIArtifact, 0, len(raw))
+	for _, a := range raw {
+		artifacts = append(artifacts, domain.CIArtifact{
+			Name: a.Name,
+			Path: a.Path,
+			Size: int64(a.Size),
+		})
+	}
+
+	adapterdriven.LogOpDone(ctx, a.name, "list_wf_artifacts",
+		slog.Duration(adapterdriven.LogKeyElapsed, time.Since(start)),
+		slog.Int(adapterdriven.LogKeyCount, len(artifacts)))
+	return artifacts, nil
+}
+
 func (a *Adapter) GetLog(ctx context.Context, jobName string, runID string, _ domain.LogFilter) (string, error) {
 	start := time.Now()
 	adapterdriven.LogOp(ctx, a.name, "get_log",

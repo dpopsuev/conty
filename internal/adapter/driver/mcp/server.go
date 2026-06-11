@@ -28,12 +28,14 @@ const serverInstructions = "CI/CD operations. Call ci(action=help) first — lis
 	"SEARCH FIRST — before reaching for curl or bash API loops, use search(params={key:value}) to find builds by " +
 	"parameter value: search(backend=X, job_ref=Y, params={\"VERSION\":\"5.0\"}) returns all matching builds. " +
 	"Combine with result=SUCCESS|FAILURE and since=<RFC3339> for precise filtering. " +
-	"Never write a bash loop over Jenkins API when search(params=) covers the use case."
+	"Never write a bash loop over Jenkins API when search(params=) covers the use case. " +
+	"CHAIN for hierarchy — use chain(backend, job_ref, run_id) to get the full nested build tree in one call " +
+	"instead of repeated downstream lookups. Returns CIRunNode with recursive children."
 
 var contySchema = json.RawMessage(`{
 	"type": "object",
 	"properties": {
-		"action":   {"type": "string", "enum": ["help","status","log","search","trigger","wait","artifact","cancel","upstream","downstream"], "description": "Action to perform. Call help first to see backends and pipelines."},
+		"action":   {"type": "string", "enum": ["help","status","log","search","trigger","wait","artifact","cancel","upstream","downstream","chain","stages"], "description": "Action to perform. Call help first to see backends and pipelines."},
 		"backend":  {"type": "string", "description": "Backend name (listed by help)"},
 		"job_ref":  {"type": "string", "description": "Job path e.g. 'ocp-baremetal-ipi-deployment' or 'CI/far-edge-vran-deployment'"},
 		"run_id":   {"type": "string", "description": "Build number. Optional for status/log — omit to use the latest build."},
@@ -51,13 +53,17 @@ var contySchema = json.RawMessage(`{
 		"tail":     {"type": "integer", "description": "Lines from end of log (default 200, -1 = all). Applies to status, log, artifact."},
 		"grep":     {"type": "string", "description": "Return only log lines containing this substring, case-insensitive. Applies to status, log, artifact."},
 		"include":        {"type": "string", "description": "Comma-separated extras for status: 'params' to include build parameters."},
-		"downstream_job": {"type": "string", "description": "Downstream job name for the downstream action. Required — Jenkins has no native reverse index."}
+		"downstream_job": {"type": "string", "description": "Downstream job name for the downstream action. Required — Jenkins has no native reverse index."},
+		"depth":     {"type": "integer", "description": "Max recursion depth for chain (default 3, -1 = unlimited)."},
+		"steps":     {"type": "boolean", "description": "Expand stages to include step-level detail (stages action)."},
+		"tree":      {"type": "boolean", "description": "Return artifacts grouped as a directory tree (artifact action)."},
+		"artifacts": {"type": "boolean", "description": "Attach artifact list to each node in the chain tree."}
 	},
 	"required": ["action"]
 }`)
 
 var (
-	errUnknownAction  = errors.New("unknown action")
+	errUnknownAction   = errors.New("unknown action")
 	errBackendRequired = errors.New("backend parameter is required")
 	errJobRefRequired  = errors.New("job_ref parameter is required")
 )
@@ -82,6 +88,10 @@ type ciArgs struct {
 	Grep     string            `json:"grep"`
 	Include       string            `json:"include"`
 	DownstreamJob string            `json:"downstream_job"`
+	Depth         int               `json:"depth"`
+	Steps         bool              `json:"steps"`
+	Tree          bool              `json:"tree"`
+	Artifacts     bool              `json:"artifacts"`
 }
 
 // ContyService combines the pipeline and CI monitor service interfaces.
@@ -287,6 +297,13 @@ func buildServer(svc ContyService) *mcpserver.Server {
 					return tool.Result{}, fmt.Errorf("run_id is required for artifact")
 				}
 				if args.Path == "" {
+					if args.Tree {
+						tree, err := svc.CIArtifactTree(ctx, args.Backend, args.JobRef, args.RunID)
+						if err != nil {
+							return tool.Result{}, err
+						}
+						return battserver.JSONResult(tree)
+					}
 					artifacts, err := svc.CIArtifacts(ctx, args.Backend, args.JobRef, args.RunID)
 					if err != nil {
 						return tool.Result{}, err
@@ -340,6 +357,55 @@ func buildServer(svc ContyService) *mcpserver.Server {
 					"job_ref":         args.JobRef,
 					"run_id":          args.RunID,
 				})
+
+			case "stages":
+				if args.Backend == "" {
+					return tool.Result{}, errBackendRequired
+				}
+				if args.JobRef == "" {
+					return tool.Result{}, errJobRefRequired
+				}
+				if args.Steps {
+					nodes, err := svc.CIStageTree(ctx, args.Backend, args.JobRef, args.RunID)
+					if err != nil {
+						return tool.Result{}, err
+					}
+					return battserver.JSONResult(map[string]any{"stages": nodes})
+				}
+				// Flat stage list — steps omitted.
+				stages, err := svc.CIStageTree(ctx, args.Backend, args.JobRef, args.RunID)
+				if err != nil {
+					return tool.Result{}, err
+				}
+				// Strip steps for flat view.
+				type flatStage struct {
+					ID       string          `json:"id"`
+					Name     string          `json:"name"`
+					Status   domain.RunStatus `json:"status"`
+					Duration int64           `json:"duration,omitempty"`
+				}
+				flat := make([]flatStage, len(stages))
+				for i, s := range stages {
+					flat[i] = flatStage{ID: s.ID, Name: s.Name, Status: s.Status, Duration: s.Duration}
+				}
+				return battserver.JSONResult(map[string]any{"stages": flat})
+
+			case "chain":
+				if args.Backend == "" {
+					return tool.Result{}, errBackendRequired
+				}
+				if args.JobRef == "" {
+					return tool.Result{}, errJobRefRequired
+				}
+				depth := args.Depth
+				if depth == 0 {
+					depth = 3
+				}
+				node, err := svc.CIChain(ctx, args.Backend, args.JobRef, args.RunID, depth, args.Artifacts)
+				if err != nil {
+					return tool.Result{}, err
+				}
+				return battserver.JSONResult(node)
 
 			case "downstream":
 				if args.Backend == "" {
@@ -426,6 +492,19 @@ func handleHelp(svc ContyService) (tool.Result, error) {
 	fmt.Fprintln(&b, "  downstream backend job_ref run_id downstream_job")
 	fmt.Fprintln(&b, "           Find builds in downstream_job triggered by job_ref#run_id.")
 	fmt.Fprintln(&b, "           downstream_job required — Jenkins has no native reverse index.")
+	fmt.Fprintln(&b)
+	fmt.Fprintln(&b, "  stages   backend job_ref [run_id] [steps]")
+	fmt.Fprintln(&b, "           List pipeline stages. steps=true expands each stage to include step-level detail.")
+	fmt.Fprintln(&b, "           Without steps: flat list. With steps: stage→steps tree in one call.")
+	fmt.Fprintln(&b)
+	fmt.Fprintln(&b, "  chain    backend job_ref run_id [depth] [artifacts]")
+	fmt.Fprintln(&b, "           Fetch a build and recursively expand its child jobs into a tree.")
+	fmt.Fprintln(&b, "           depth default 3, -1 = unlimited. artifacts=true attaches artifact list to each node.")
+	fmt.Fprintln(&b, "           Use instead of repeated downstream calls when child job names are unknown.")
+	fmt.Fprintln(&b)
+	fmt.Fprintln(&b, "  artifact backend job_ref run_id [path] [grep] [tail] [tree]")
+	fmt.Fprintln(&b, "           tree=true groups artifacts into a directory tree by relativePath (includes sizes).")
+	fmt.Fprintln(&b, "           Omit path and tree to list artifacts flat. Provide path to read a text artifact.")
 	fmt.Fprintln(&b)
 	fmt.Fprintln(&b, "Tips:")
 	fmt.Fprintln(&b, "  status(grep=error)       — failure context in one call")
