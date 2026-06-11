@@ -252,21 +252,13 @@ func (a *Adapter) ListStageNodes(ctx context.Context, jobName string, runID stri
 			Status:   mapPipelineStatus(s.Status),
 			Duration: int64(s.Duration),
 		}
-		// Fetch steps for non-skipped stages.
+		// Fetch steps for non-skipped stages via direct HTTP call.
+		// gojenkins GetNode is not used because PipelineNode.ParentNodes is []int64
+		// but Jenkins returns []string, causing JSON unmarshal errors.
 		if s.Status != "NOT_EXECUTED" && s.Status != "SKIPPED" {
-			detail, nerr := raw.GetNode(ctx, s.ID)
-			if nerr == nil {
-				node.Steps = make([]domain.CIStep, 0, len(detail.StageFlowNodes))
-				for j := range detail.StageFlowNodes {
-					st := &detail.StageFlowNodes[j]
-					node.Steps = append(node.Steps, domain.CIStep{
-						ID:          st.ID,
-						Name:        st.Name,
-						Status:      mapPipelineStatus(st.Status),
-						Duration:    int64(st.Duration),
-						Description: st.Name,
-					})
-				}
+			steps, serr := a.fetchStageSteps(ctx, jobName, runID, s.ID)
+			if serr == nil {
+				node.Steps = steps
 			}
 		}
 		nodes = append(nodes, node)
@@ -1037,6 +1029,61 @@ func (a *Adapter) GetDownstreamRuns(ctx context.Context, downstreamJob, upstream
 		slog.Duration(adapterdriven.LogKeyElapsed, time.Since(start)),
 		slog.Int(adapterdriven.LogKeyCount, len(runs)))
 	return runs, nil
+}
+
+// wfStageNode is a minimal struct for deserialising a single
+// pipeline stage's wfapi/describe response. Avoids gojenkins
+// PipelineNode whose ParentNodes []int64 mismatches Jenkins' []string.
+type wfStageNode struct {
+	StageFlowNodes []struct {
+		ID       string `json:"id"`
+		Name     string `json:"name"`
+		Status   string `json:"status"`
+		Duration int64  `json:"durationMillis"`
+		ParamDesc string `json:"parameterDescription"`
+	} `json:"stageFlowNodes"`
+}
+
+// fetchStageSteps retrieves step-level detail for a pipeline stage via wfapi.
+func (a *Adapter) fetchStageSteps(ctx context.Context, jobName, runID, nodeID string) ([]domain.CIStep, error) {
+	urlPath := strings.TrimRight(a.baseURL, "/") +
+		"/job/" + strings.Trim(jobName, "/") +
+		"/" + runID +
+		"/execution/node/" + nodeID + "/wfapi/describe"
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, urlPath, nil)
+	if err != nil {
+		return nil, err
+	}
+	if a.user != "" && a.token != "" {
+		req.SetBasicAuth(a.user, a.token)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	var node wfStageNode
+	if err := json.NewDecoder(resp.Body).Decode(&node); err != nil {
+		return nil, err
+	}
+
+	steps := make([]domain.CIStep, 0, len(node.StageFlowNodes))
+	for _, st := range node.StageFlowNodes {
+		desc := st.ParamDesc
+		if desc == "" {
+			desc = st.Name
+		}
+		steps = append(steps, domain.CIStep{
+			ID:          st.ID,
+			Name:        st.Name,
+			Status:      mapPipelineStatus(st.Status),
+			Duration:    st.Duration,
+			Description: desc,
+		})
+	}
+	return steps, nil
 }
 
 // wfArtifactRelPath extracts the relative artifact path from gojenkins'

@@ -486,3 +486,43 @@ func TestListWfArtifacts_StripsAbsolutePath(t *testing.T) {
 		}
 	}
 }
+
+func TestFetchStageSteps_ParsesStageFlowNodes(t *testing.T) {
+	// Verify wfStageNode parses Jenkins wfapi stage describe correctly,
+	// including ParentNodes as strings (not int64 — gojenkins bug).
+	body := `{
+		"id": "162",
+		"name": "Wait for DU policies",
+		"status": "FAILED",
+		"stageFlowNodes": [
+			{
+				"id": "169",
+				"name": "Shell Script",
+				"status": "SUCCESS",
+				"durationMillis": 5000,
+				"parameterDescription": "oc wait --for=condition=Updated mcp master",
+				"parentNodes": ["168"]
+			},
+			{
+				"id": "172",
+				"name": "Shell Script",
+				"status": "FAILED",
+				"durationMillis": 300000,
+				"parentNodes": ["171"]
+			}
+		]
+	}`
+	var node wfStageNode
+	if err := json.Unmarshal([]byte(body), &node); err != nil {
+		t.Fatalf("unmarshal failed: %v", err)
+	}
+	if len(node.StageFlowNodes) != 2 {
+		t.Fatalf("want 2 steps, got %d", len(node.StageFlowNodes))
+	}
+	if node.StageFlowNodes[0].ParamDesc != "oc wait --for=condition=Updated mcp master" {
+		t.Errorf("expected parameterDescription, got %q", node.StageFlowNodes[0].ParamDesc)
+	}
+	if node.StageFlowNodes[1].Status != "FAILED" {
+		t.Errorf("expected FAILED status, got %q", node.StageFlowNodes[1].Status)
+	}
+}
