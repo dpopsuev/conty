@@ -463,3 +463,26 @@ func TestBuildJobPath(t *testing.T) {
 		}
 	}
 }
+
+func TestListWfArtifacts_StripsAbsolutePath(t *testing.T) {
+	// Verify that absolute paths from wfapi are normalized to relative paths.
+	cases := []struct {
+		rawPath  string
+		wantPath string
+	}{
+		{"/job/my-job/42/artifact/build.url", "build.url"},
+		{"/job/my-job/42/artifact/cnf-gotests/reports/ptp_suite_test.xml", "cnf-gotests/reports/ptp_suite_test.xml"},
+		{"build.url", "build.url"},          // already relative — unchanged
+		{"", "already-name"},                // empty path — falls back to Name
+	}
+	for _, tc := range cases {
+		name := tc.rawPath
+		if name == "" {
+			name = "already-name"
+		}
+		got := wfArtifactRelPath(tc.rawPath, name)
+		if got != tc.wantPath {
+			t.Errorf("relPath(%q) = %q, want %q", tc.rawPath, got, tc.wantPath)
+		}
+	}
+}

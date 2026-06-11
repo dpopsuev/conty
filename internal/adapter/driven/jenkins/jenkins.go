@@ -304,11 +304,11 @@ func (a *Adapter) ListWfArtifacts(ctx context.Context, jobName string, runID str
 	}
 
 	artifacts := make([]domain.CIArtifact, 0, len(raw))
-	for _, a := range raw {
+	for _, art := range raw {
 		artifacts = append(artifacts, domain.CIArtifact{
-			Name: a.Name,
-			Path: a.Path,
-			Size: int64(a.Size),
+			Name: art.Name,
+			Path: wfArtifactRelPath(art.Path, art.Name),
+			Size: int64(art.Size),
 		})
 	}
 
@@ -1035,4 +1035,17 @@ func (a *Adapter) GetDownstreamRuns(ctx context.Context, downstreamJob, upstream
 		slog.Duration(adapterdriven.LogKeyElapsed, time.Since(start)),
 		slog.Int(adapterdriven.LogKeyCount, len(runs)))
 	return runs, nil
+}
+
+// wfArtifactRelPath extracts the relative artifact path from gojenkins'
+// PipelineArtifact.Path, which may be an absolute URL path like
+// "/job/foo/42/artifact/reports/file.xml". Falls back to name.
+func wfArtifactRelPath(path, name string) string {
+	if idx := strings.Index(path, "/artifact/"); idx >= 0 {
+		return path[idx+len("/artifact/"):]
+	}
+	if path != "" && !strings.HasPrefix(path, "/") {
+		return path
+	}
+	return name
 }

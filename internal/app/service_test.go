@@ -813,3 +813,24 @@ func TestCIChain_IncludesArtifacts(t *testing.T) {
 		t.Errorf("unexpected artifact: %s", node.Artifacts[0].Name)
 	}
 }
+
+func TestCIArtifactTree_WfApiAbsolutePathStripped(t *testing.T) {
+	// gojenkins PipelineArtifact.Path contains the full URL path — must be stripped.
+	stub := stubAdapter()
+	stub.WfArtifacts = []domain.CIArtifact{
+		{Name: "build.url", Path: "build.url", Size: 90},
+		{Name: "ptp_suite_test.xml", Path: "cnf-gotests/reports/ptp_suite_test.xml", Size: 500},
+	}
+	svc := app.NewService(stub)
+
+	tree, err := svc.CIArtifactTree(context.Background(), "test", "my-job", "42")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(tree.Files) != 1 || tree.Files[0].Name != "build.url" {
+		t.Errorf("want build.url at root, got %+v", tree.Files)
+	}
+	if len(tree.Children) != 1 || tree.Children[0].Path != "cnf-gotests" {
+		t.Errorf("want cnf-gotests subdir, got %+v", tree.Children)
+	}
+}
