@@ -27,8 +27,8 @@ func descriptionString(v interface{}) string {
 	return s
 }
 
-// hrefRe matches href attributes in HTML, capturing the URL value.
-var hrefRe = regexp.MustCompile(`href=['"]([^'"]+)['"]`)
+// anchorRe matches HTML anchor elements, capturing the href URL and the anchor text.
+var anchorRe = regexp.MustCompile(`<a[^>]*href=['"]([^'"]+)['"][^>]*>([^<]*)</a>`)
 
 // parseChildrenFromDescription extracts child job/run pairs from a Jenkins build
 // description field. Jenkins encodes triggered downstream builds as HTML anchor
@@ -41,8 +41,9 @@ func parseChildrenFromDescription(desc string) []domain.CIRunRef {
 	}
 	var results []domain.CIRunRef
 	seen := map[string]bool{}
-	for _, m := range hrefRe.FindAllStringSubmatch(desc, -1) {
+	for _, m := range anchorRe.FindAllStringSubmatch(desc, -1) {
 		href := m[1]
+		displayName := strings.TrimSpace(m[2])
 		// Strip scheme+host from absolute URLs, keep path only.
 		if idx := strings.Index(href, "/job/"); idx > 0 {
 			href = href[idx:]
@@ -70,8 +71,9 @@ func parseChildrenFromDescription(desc string) []domain.CIRunRef {
 		}
 		seen[key] = true
 		results = append(results, domain.CIRunRef{
-			JobRef: strings.Join(jobParts, "/"),
-			RunID:  runID,
+			JobRef:      strings.Join(jobParts, "/"),
+			RunID:       runID,
+			DisplayName: displayName,
 		})
 	}
 	return results
@@ -888,15 +890,24 @@ func (a *Adapter) filterAndMapBuild(ctx context.Context, jobName string, b build
 	}
 
 	// Params filter — all specified key=value pairs must match
-	if len(f.Params) > 0 {
-		got := map[string]string{}
+	got := map[string]string{}
+	if len(f.Params) > 0 || len(f.ParamsContain) > 0 {
 		for _, action := range b.Actions {
 			for _, p := range action.Parameters {
 				got[p.Name] = fmt.Sprintf("%v", p.Value)
 			}
 		}
+	}
+	if len(f.Params) > 0 {
 		for k, v := range f.Params {
 			if got[k] != v {
+				return domain.CIRun{}, false
+			}
+		}
+	}
+	if len(f.ParamsContain) > 0 {
+		for k, v := range f.ParamsContain {
+			if !strings.Contains(strings.ToLower(got[k]), strings.ToLower(v)) {
 				return domain.CIRun{}, false
 			}
 		}

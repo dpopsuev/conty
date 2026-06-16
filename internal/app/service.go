@@ -332,22 +332,23 @@ func (s *Service) CIChain(ctx context.Context, backend, jobRef, runID string, de
 	if err != nil {
 		return nil, err
 	}
-	return ciChainExpand(ctx, a, jobRef, runID, depth, includeArtifacts)
+	return ciChainExpand(ctx, a, jobRef, runID, "", depth, includeArtifacts)
 }
 
-func ciChainExpand(ctx context.Context, a driven.CICore, jobRef, runID string, depth int, includeArtifacts bool) (*domain.CIRunNode, error) {
+func ciChainExpand(ctx context.Context, a driven.CICore, jobRef, runID, displayName string, depth int, includeArtifacts bool) (*domain.CIRunNode, error) {
 	run, err := a.GetRun(ctx, jobRef, runID)
 	if err != nil {
 		return nil, err
 	}
 	node := &domain.CIRunNode{
-		JobRef:   jobRef,
-		RunID:    run.ID,
-		Name:     run.Name,
-		Status:   run.Status,
-		Result:   run.Result,
-		URL:      run.URL,
-		Duration: run.Duration,
+		JobRef:      jobRef,
+		RunID:       run.ID,
+		Name:        run.Name,
+		DisplayName: displayName,
+		Status:      run.Status,
+		Result:      run.Result,
+		URL:         run.URL,
+		Duration:    run.Duration,
 	}
 	if includeArtifacts {
 		if store, ok := a.(driven.CIArtifactStore); ok {
@@ -366,12 +367,13 @@ func ciChainExpand(ctx context.Context, a driven.CICore, jobRef, runID string, d
 		nextDepth = -1
 	}
 	for _, ref := range run.Children {
-		child, err := ciChainExpand(ctx, a, ref.JobRef, ref.RunID, nextDepth, includeArtifacts)
+		child, err := ciChainExpand(ctx, a, ref.JobRef, ref.RunID, ref.DisplayName, nextDepth, includeArtifacts)
 		if err != nil {
 			child = &domain.CIRunNode{
-				JobRef: ref.JobRef,
-				RunID:  ref.RunID,
-				Status: domain.RunStatus("unknown"),
+				JobRef:      ref.JobRef,
+				RunID:       ref.RunID,
+				DisplayName: ref.DisplayName,
+				Status:      domain.RunStatus("unknown"),
 			}
 		}
 		node.Children = append(node.Children, *child)

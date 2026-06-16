@@ -5,11 +5,12 @@ import "time"
 // BuildFilter selects past builds to return from SearchBuilds.
 // All non-zero fields are ANDed together.
 type BuildFilter struct {
-	Result string            // e.g. "SUCCESS", "FAILURE", "ABORTED"
-	Params map[string]string // all specified params must match
-	Runner string            // user who triggered the build (userId from causes)
-	Since  time.Time         // only builds started at or after this time
-	Limit  int               // max results to return (default 20)
+	Result        string            // e.g. "SUCCESS", "FAILURE", "ABORTED"
+	Params        map[string]string // all specified params must match (exact)
+	ParamsContain map[string]string // all specified params must contain substring (case-insensitive)
+	Runner        string            // user who triggered the build (userId from causes)
+	Since         time.Time         // only builds started at or after this time
+	Limit         int               // max results to return (default 20)
 }
 
 const (
@@ -42,8 +43,9 @@ type LogResult struct {
 // Populated from the Jenkins build description when the parent build
 // triggered downstream jobs whose run IDs can be parsed from HTML links.
 type CIRunRef struct {
-	JobRef string `json:"job_ref"`
-	RunID  string `json:"run_id"`
+	JobRef      string `json:"job_ref"`
+	RunID       string `json:"run_id"`
+	DisplayName string `json:"display_name,omitempty"`
 }
 
 type CIRun struct {
@@ -62,15 +64,16 @@ type CIRun struct {
 // CIRunNode is a fully-expanded build with its children recursively resolved.
 // Returned by the chain action in place of the lightweight CIRunRef slice.
 type CIRunNode struct {
-	JobRef    string        `json:"job_ref"`
-	RunID     string        `json:"run_id"`
-	Name      string        `json:"name"`
-	Status    RunStatus     `json:"status"`
-	Result    RunResult     `json:"result,omitempty"`
-	URL       string        `json:"url,omitempty"`
-	Duration  int64         `json:"duration,omitempty"`
-	Artifacts []CIArtifact  `json:"artifacts,omitempty"`
-	Children  []CIRunNode   `json:"children,omitempty"`
+	JobRef      string        `json:"job_ref"`
+	RunID       string        `json:"run_id"`
+	Name        string        `json:"name"`
+	DisplayName string        `json:"display_name,omitempty"`
+	Status      RunStatus     `json:"status"`
+	Result      RunResult     `json:"result,omitempty"`
+	URL         string        `json:"url,omitempty"`
+	Duration    int64         `json:"duration,omitempty"`
+	Artifacts   []CIArtifact  `json:"artifacts,omitempty"`
+	Children    []CIRunNode   `json:"children,omitempty"`
 }
 
 // CIStep is a single step within a pipeline stage.

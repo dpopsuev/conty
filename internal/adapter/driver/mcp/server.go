@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -27,12 +29,17 @@ const serverInstructions = "CI/CD operations. Call ci(action=help) first — lis
 	"run_id is optional for status/log — omit to use the latest build. " +
 	"SEARCH FIRST — before reaching for curl or bash API loops, use search(params={key:value}) to find builds by " +
 	"parameter value: search(backend=X, job_ref=Y, params={\"VERSION\":\"5.0\"}) returns all matching builds. " +
+	"Use params_contain={key:substring} for substring matching within parameter values (case-insensitive) — " +
+	"e.g. params_contain={\"JOB_DATA\":\"OCP_VERSION: '5.0'\"} to find builds with embedded YAML values. " +
 	"Combine with result=SUCCESS|FAILURE and since=<RFC3339> for precise filtering. " +
 	"Never write a bash loop over Jenkins API when search(params=) covers the use case. " +
 	"CHAIN for hierarchy — use chain(backend, job_ref, run_id) to get the full nested build tree in one call " +
-	"instead of repeated downstream lookups. Returns CIRunNode with recursive children. " +
+	"instead of repeated downstream lookups. Returns CIRunNode with recursive children and display_name " +
+	"(the parent-assigned name like 'PTP functional test - OC 2 port'). " +
 	"DIAGNOSE failures with stages(steps=true, include_failed_log=true) — returns stage→steps tree with " +
 	"failed step logs attached. Use this BEFORE reading console log. " +
+	"ARTIFACT DOWNLOAD — use save_path to write binary artifacts (ZIP, etc.) directly to disk: " +
+	"artifact(backend, job_ref, run_id, path=..., save_path=/tmp/out.zip). " +
 	"WAIT is now blocking — wait(backend, job_ref, run_id) polls until terminal state and returns final status."
 
 var contySchema = json.RawMessage(`{
@@ -62,7 +69,9 @@ var contySchema = json.RawMessage(`{
 		"include_failed_log": {"type": "boolean", "description": "Attach wfapi log of each failed step (stages action, requires steps=true)."},
 		"timeout_s":          {"type": "integer", "description": "Blocking timeout in seconds for wait action (default 3600)."},
 		"tree":      {"type": "boolean", "description": "Return artifacts grouped as a directory tree (artifact action)."},
-		"artifacts": {"type": "boolean", "description": "Attach artifact list to each node in the chain tree."}
+		"artifacts": {"type": "boolean", "description": "Attach artifact list to each node in the chain tree."},
+		"save_path": {"type": "string", "description": "Save artifact to this file path instead of returning text. Required for binary artifacts (ZIP, etc.)."},
+		"params_contain": {"type": "object", "description": "Filter builds where parameter values contain these substrings (case-insensitive). Use for embedded values like OCP_VERSION inside JOB_DATA YAML."}
 	},
 	"required": ["action"]
 }`)
@@ -99,6 +108,8 @@ type ciArgs struct {
 	TimeoutS         int  `json:"timeout_s"`
 	Tree          bool              `json:"tree"`
 	Artifacts     bool              `json:"artifacts"`
+	SavePath      string            `json:"save_path"`
+	ParamsContain map[string]string `json:"params_contain"`
 }
 
 // ContyService combines the pipeline and CI monitor service interfaces.
@@ -227,10 +238,11 @@ func buildServer(svc ContyService) *mcpserver.Server {
 					return tool.Result{}, errJobRefRequired
 				}
 				f := domain.BuildFilter{
-					Result: args.Result,
-					Params: args.Params,
-					Runner: args.Runner,
-					Limit:  args.Limit,
+					Result:        args.Result,
+					Params:        args.Params,
+					ParamsContain: args.ParamsContain,
+					Runner:        args.Runner,
+					Limit:         args.Limit,
 				}
 				if args.Since != "" {
 					t, err := time.Parse(time.RFC3339, args.Since)
@@ -334,6 +346,19 @@ func buildServer(svc ContyService) *mcpserver.Server {
 						return tool.Result{}, err
 					}
 					return battserver.JSONResult(map[string]any{"artifacts": artifacts})
+				}
+				if args.SavePath != "" {
+					data, err := svc.CIArtifactGet(ctx, args.Backend, args.JobRef, args.RunID, args.Path)
+					if err != nil {
+						return tool.Result{}, err
+					}
+					if err := os.MkdirAll(filepath.Dir(args.SavePath), 0755); err != nil {
+						return tool.Result{}, fmt.Errorf("create directory: %w", err)
+					}
+					if err := os.WriteFile(args.SavePath, data, 0644); err != nil {
+						return tool.Result{}, fmt.Errorf("write artifact: %w", err)
+					}
+					return battserver.JSONResult(map[string]any{"saved": args.SavePath, "size": len(data)})
 				}
 				res, err := svc.CIArtifactText(ctx, args.Backend, args.JobRef, args.RunID, args.Path, domain.LogFilter{Tail: args.Tail, Grep: args.Grep})
 				if err != nil {

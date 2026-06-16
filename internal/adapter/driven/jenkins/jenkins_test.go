@@ -204,6 +204,9 @@ func TestParseChildrenFromDescription_SingleChildRelative(t *testing.T) {
 	if got[0].RunID != "7" {
 		t.Errorf("RunID = %q, want %q", got[0].RunID, "7")
 	}
+	if got[0].DisplayName != "child-tests #7" {
+		t.Errorf("DisplayName = %q, want %q", got[0].DisplayName, "child-tests #7")
+	}
 }
 
 func TestParseChildrenFromDescription_SingleChildAbsoluteURL(t *testing.T) {
@@ -218,6 +221,9 @@ func TestParseChildrenFromDescription_SingleChildAbsoluteURL(t *testing.T) {
 	if got[0].RunID != "7" {
 		t.Errorf("RunID = %q, want %q", got[0].RunID, "7")
 	}
+	if got[0].DisplayName != "link" {
+		t.Errorf("DisplayName = %q, want %q", got[0].DisplayName, "link")
+	}
 }
 
 func TestParseChildrenFromDescription_MultipleChildren(t *testing.T) {
@@ -226,6 +232,12 @@ func TestParseChildrenFromDescription_MultipleChildren(t *testing.T) {
 	got := parseChildrenFromDescription(desc)
 	if len(got) != 2 {
 		t.Fatalf("expected 2 children, got %d: %v", len(got), got)
+	}
+	if got[0].DisplayName != "tests" {
+		t.Errorf("child 0 DisplayName = %q, want %q", got[0].DisplayName, "tests")
+	}
+	if got[1].DisplayName != "collect" {
+		t.Errorf("child 1 DisplayName = %q, want %q", got[1].DisplayName, "collect")
 	}
 }
 
@@ -246,6 +258,27 @@ func TestParseChildrenFromDescription_TopLevelJob(t *testing.T) {
 	}
 	if got[0].JobRef != "child-tests" {
 		t.Errorf("JobRef = %q, want %q", got[0].JobRef, "child-tests")
+	}
+}
+
+func TestParseChildrenFromDescription_RealJenkinsHTML(t *testing.T) {
+	desc := `<td style='padding:10px; border:1px solid black;'>` +
+		`<a href="https://jenkins.example.com/job/ocp-far-edge-vran-tests/6775//">#2 PTP functional test [3]</a></td>` +
+		`<td style='padding:10px; border:1px solid black;'>` +
+		`<a href="https://jenkins.example.com/job/ocp-far-edge-vran-tests/6775//console">ocp-far-edge-vran-tests/console</a></td>` +
+		`<td style='padding:10px; border:1px solid black;'>` +
+		`<a href="https://jenkins.example.com/job/ocp-far-edge-vran-tests/6778//">#4 PTP functional test - OC 2 port [5]</a></td>` +
+		`<td style='padding:10px; border:1px solid black;'>` +
+		`<a href="https://jenkins.example.com/job/ocp-far-edge-vran-tests/6778//console">ocp-far-edge-vran-tests/console</a></td>`
+	got := parseChildrenFromDescription(desc)
+	if len(got) != 2 {
+		t.Fatalf("expected 2 children (deduplicated), got %d: %v", len(got), got)
+	}
+	if got[0].DisplayName != "#2 PTP functional test [3]" {
+		t.Errorf("child 0 DisplayName = %q, want %q", got[0].DisplayName, "#2 PTP functional test [3]")
+	}
+	if got[1].DisplayName != "#4 PTP functional test - OC 2 port [5]" {
+		t.Errorf("child 1 DisplayName = %q, want %q", got[1].DisplayName, "#4 PTP functional test - OC 2 port [5]")
 	}
 }
 
