@@ -200,6 +200,10 @@ func newServiceFromConfig() (*app.Service, error) {
 	svc := app.NewService(adapters...)
 	svc.RegisterUnconfigured(unconfigured)
 
+	if diagPath := os.Getenv("CONTY_DIAGNOSTIC_CONFIG"); diagPath != "" {
+		app.LoadDiagnosticConfig(diagPath)
+	}
+
 	for name, pcfg := range cfg.Pipelines {
 		steps := make([]domain.PipelineStep, len(pcfg.Steps))
 		for i, s := range pcfg.Steps {

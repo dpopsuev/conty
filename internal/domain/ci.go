@@ -58,7 +58,8 @@ type CIRun struct {
 	Duration      int64      `json:"duration,omitempty"`
 	UpstreamJob   string     `json:"upstream_job,omitempty"`
 	UpstreamRunID string     `json:"upstream_run_id,omitempty"`
-	Children      []CIRunRef `json:"children,omitempty"`
+	Children       []CIRunRef `json:"children,omitempty"`
+	FailureExcerpt string     `json:"failure_excerpt,omitempty"`
 }
 
 // CIRunNode is a fully-expanded build with its children recursively resolved.

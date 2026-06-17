@@ -37,6 +37,12 @@ func TranslateBuilds(runs []domain.CIRun, backend string) translate.Result {
 		if !run.StartedAt.IsZero() {
 			r.Extra["started_at"] = run.StartedAt.Format("2006-01-02T15:04:05Z")
 		}
+		if run.FailureExcerpt != "" {
+			r.Sections = append(r.Sections, translate.Section{
+				Name: "failure_log",
+				Text: run.FailureExcerpt,
+			})
+		}
 		result.Records = append(result.Records, r)
 
 		if run.UpstreamJob != "" && run.UpstreamRunID != "" {
