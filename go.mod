@@ -4,7 +4,7 @@ go 1.25.8
 
 require (
 	github.com/bndr/gojenkins v1.2.0
-	github.com/dpopsuev/battery v1.4.0
+	github.com/dpopsuev/battery v1.5.0
 	github.com/modelcontextprotocol/go-sdk v1.5.0
 	github.com/spf13/cobra v1.10.2
 	gopkg.in/yaml.v3 v3.0.1
