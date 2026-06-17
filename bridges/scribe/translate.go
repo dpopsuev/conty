@@ -27,9 +27,11 @@ func TranslateBuilds(runs []domain.CIRun, backend string) translate.Result {
 				{Name: "url", Text: run.URL},
 			},
 			Extra: map[string]any{
-				"status":   string(run.Status),
-				"result":   string(run.Result),
-				"duration": run.Duration,
+				"ref_backend": "conty",
+				"ref_id":      buildID(backend, run.Name, run.ID),
+				"status":      string(run.Status),
+				"result":      string(run.Result),
+				"duration":    run.Duration,
 			},
 		}
 		if !run.StartedAt.IsZero() {
@@ -68,9 +70,11 @@ func walkTree(node *domain.CIRunNode, backend string, result *translate.Result) 
 			"result:" + strings.ToLower(string(node.Result)),
 		},
 		Extra: map[string]any{
-			"status":   string(node.Status),
-			"result":   string(node.Result),
-			"duration": node.Duration,
+			"ref_backend": "conty",
+			"ref_id":      id,
+			"status":      string(node.Status),
+			"result":      string(node.Result),
+			"duration":    node.Duration,
 		},
 	}
 	result.Records = append(result.Records, r)
