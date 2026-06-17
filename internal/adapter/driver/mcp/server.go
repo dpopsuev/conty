@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dpopsuev/battery/mcpserver"
+	batterymcp "github.com/dpopsuev/battery/mcp"
 	battserver "github.com/dpopsuev/battery/server"
 	"github.com/dpopsuev/battery/tool"
 	"github.com/dpopsuev/conty/internal/domain"
@@ -139,7 +139,7 @@ func NewMCPServer(svc ContyService) *sdkmcp.Server {
 }
 
 // NewBatteryServer returns the underlying battery server (for testing with in-memory transports).
-func NewBatteryServer(svc ContyService) *mcpserver.Server {
+func NewBatteryServer(svc ContyService) *batterymcp.Server {
 	return buildServer(svc)
 }
 
@@ -151,7 +151,7 @@ func NewHTTPHandler(svc ContyService) http.Handler {
 	}, opts)
 }
 
-func buildServer(svc ContyService) *mcpserver.Server {
+func buildServer(svc ContyService) *batterymcp.Server {
 	meta := battserver.ToolMeta{
 		Name:        serverName,
 		Description: "CI/CD operations — help | status | log | search | trigger | wait | artifact | cancel | upstream | downstream. " +
@@ -161,7 +161,7 @@ func buildServer(svc ContyService) *mcpserver.Server {
 		Categories:  []string{"ci", "deployment"},
 	}
 
-	srv := mcpserver.NewServer(serverName, Version).
+	srv := batterymcp.NewServer(serverName, Version).
 		WithInstructions(serverInstructions)
 
 	srv.ToolWithSchema(meta, contySchema,
